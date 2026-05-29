@@ -73,6 +73,9 @@ class SemanticScholarSearchTool(BaseTool):
         )
         print(f"Response Status Code: {rsp.status_code}")
         print(f"Response Content: {rsp.text[:500]}")
+        if rsp.status_code == 429:
+            print("Semantic Scholar rate limit (429) hit. Gracefully skipping literature search.")
+            return None
         rsp.raise_for_status()
         results = rsp.json()
         total = results.get("total", 0)
@@ -127,6 +130,9 @@ def search_for_papers(query, result_limit=10) -> Union[None, List[Dict]]:
     print(
         f"Response Content: {rsp.text[:500]}"
     )  # Print the first 500 characters of the response content
+    if rsp.status_code == 429:
+        print("Semantic Scholar rate limit (429) hit. Gracefully skipping literature search.")
+        return None
     rsp.raise_for_status()
     results = rsp.json()
     total = results["total"]

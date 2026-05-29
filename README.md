@@ -78,6 +78,18 @@ pip install anthropic[bedrock]
 ```
 Next, configure valid [AWS Credentials](https://docs.aws.amazon.com/cli/v1/userguide/cli-configure-envvars.html) and the target [AWS Region](https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html) by setting the following environment variables: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION_NAME`.
 
+#### Local Ollama Models
+
+You can run AI Scientist-v2 fully locally using Ollama models. This eliminates the need for external API keys (OpenAI, Gemini, or Claude).
+
+1. **Routing Mappings:** Mappings are defined inside `bfts_config.yaml`:
+   - Coding & Traceback Feedback: `ollama/granite4.1:30b`
+   - Writeup & Review: `ollama/gemma4:26b`
+   - Visual Critique (VLM): `ollama/llava:7b`
+2. **Native REST Client Integration:** Bypasses the standard Python SDK and routes calls directly to the local `/api/chat` endpoint at `http://localhost:11434`.
+3. **Dynamic Context Allocation:** Requests automatically specify `"options": {"num_ctx": 32768}` to ensure a 32k context size is used natively.
+4. **Health Check Verification:** Automatically checks the responsiveness of the Ollama server before dispatching queries.
+
 #### Semantic Scholar API (Literature Search)
 
 Our code can optionally use a Semantic Scholar API Key (`S2_API_KEY`) for higher throughput during literature search [if you have one](https://www.semanticscholar.org/product/api). This is used during both the ideation and paper writing stages. The system should work without it, though you might encounter rate limits or reduced novelty checking during ideation. If you experience issues with Semantic Scholar, you can skip the citation phase during paper generation.
@@ -140,6 +152,7 @@ Key tree search configuration parameters in `bfts_config.yaml`:
 
 Example command to run AI-Scientist-v2 using a generated idea file (e.g., `my_research_topic.json`). Please review `bfts_config.yaml` for detailed tree search parameters (the default config includes `claude-3-5-sonnet` for experiments). Do not set `load_code` if you do not want to initialize experimentation with a code snippet.
 
+#### Cloud API Models Execution:
 ```bash
 python launch_scientist_bfts.py \
  --load_ideas "ai_scientist/ideas/my_research_topic.json" \
@@ -150,6 +163,18 @@ python launch_scientist_bfts.py \
  --model_review gpt-4o-2024-11-20 \
  --model_agg_plots o3-mini-2025-01-31 \
  --num_cite_rounds 20
+```
+
+#### Local Ollama Models Execution:
+```bash
+python launch_scientist_bfts.py \
+ --load_ideas "ai_scientist/ideas/my_research_topic.json" \
+ --load_code \
+ --model_writeup "ollama/gemma4:26b" \
+ --model_citation "ollama/granite4.1:30b" \
+ --model_review "ollama/gemma4:26b" \
+ --model_agg_plots "ollama/granite4.1:30b" \
+ --num_cite_rounds 2
 ```
 
 Once the initial experimental stage is complete, you will find a timestamped log folder inside the `experiments/` directory. Navigate to `experiments/"timestamp_ideaname"/logs/0-run/` within that folder to find the tree visualization file `unified_tree_viz.html`.

@@ -1,12 +1,161 @@
 import json
 import os
 import re
+import time
 from typing import Any
 from ai_scientist.utils.token_tracker import track_token_usage
 
 import anthropic
 import backoff
 import openai
+import requests
+
+class MockFunction:
+    def __init__(self, name, arguments):
+        self.name = name
+        self.arguments = arguments
+
+class MockToolCall:
+    def __init__(self, function):
+        self.function = function
+
+class MockMessage:
+    def __init__(self, content, tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls
+
+class MockChoice:
+    def __init__(self, message, finish_reason="stop"):
+        self.message = message
+        self.finish_reason = finish_reason
+
+class MockCompletionTokensDetails:
+    def __init__(self, reasoning_tokens=0):
+        self.reasoning_tokens = reasoning_tokens
+
+class MockUsage:
+    def __init__(self, prompt_tokens=0, completion_tokens=0):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.total_tokens = prompt_tokens + completion_tokens
+        self.completion_tokens_details = MockCompletionTokensDetails()
+
+class MockResponse:
+    def __init__(self, choices, usage=None, model="ollama-model", created=None):
+        import time
+        self.choices = choices
+        self.usage = usage or MockUsage()
+        self.system_fingerprint = "fp_ollama"
+        self.model = model
+        self.created = created or int(time.time())
+
+_OLLAMA_HEALTHY = None
+
+def verify_ollama_health():
+    global _OLLAMA_HEALTHY
+    if _OLLAMA_HEALTHY is True:
+        return
+    base_url = "http://localhost:11434"
+    try:
+        response = requests.get(f"{base_url}/", timeout=3)
+        if response.status_code == 200:
+            _OLLAMA_HEALTHY = True
+            return
+    except requests.exceptions.RequestException:
+        pass
+    raise ConnectionError(
+        f"Ollama server is not reachable at {base_url}. "
+        "Please ensure the Ollama daemon is running. "
+        "You can start it by running 'ollama serve' or restarting the Ollama service."
+    )
+
+def map_openai_messages_to_ollama(messages):
+    mapped_messages = []
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content")
+        images = []
+        text_parts = []
+        
+        if isinstance(content, list):
+            for part in content:
+                if part.get("type") == "text":
+                    text_parts.append(part.get("text", ""))
+                elif part.get("type") == "image_url":
+                    img_url = part.get("image_url", {}).get("url", "")
+                    if "," in img_url:
+                        base64_data = img_url.split(",")[1]
+                    else:
+                        base64_data = img_url
+                    images.append(base64_data)
+            text_content = "".join(text_parts)
+        else:
+            text_content = content or ""
+            
+        mapped_msg = {"role": role, "content": text_content}
+        if images:
+            mapped_msg["images"] = images
+        mapped_messages.append(mapped_msg)
+        
+    return mapped_messages
+
+def call_ollama_v1(model, messages, temperature=0.7, max_tokens=4096, n=1, stop=None, tools=None, tool_choice=None):
+    verify_ollama_health()
+    
+    mapped_messages = map_openai_messages_to_ollama(messages)
+    
+    options = {
+        "num_ctx": 32768
+    }
+    if temperature is not None:
+        options["temperature"] = temperature
+    if max_tokens is not None:
+        options["num_predict"] = max_tokens
+    if stop is not None:
+        options["stop"] = stop
+        
+    payload = {
+        "model": model.replace("ollama/", ""),
+        "messages": mapped_messages,
+        "stream": False,
+        "options": options
+    }
+    if tools is not None:
+        payload["tools"] = tools
+        
+    base_url = "http://localhost:11434/api/chat"
+    response = requests.post(base_url, json=payload)
+    response.raise_for_status()
+    res_data = response.json()
+    
+    choices = []
+    msg_data = res_data.get("message", {})
+    tool_calls = None
+    if "tool_calls" in msg_data and msg_data["tool_calls"]:
+        tool_calls = []
+        for tc in msg_data["tool_calls"]:
+            func_data = tc.get("function", {})
+            func_args = func_data.get("arguments", {})
+            args_str = json.dumps(func_args)
+            tool_calls.append(
+                MockToolCall(
+                    MockFunction(func_data.get("name"), args_str)
+                )
+            )
+            
+    msg = MockMessage(msg_data.get("content"), tool_calls)
+    choices.append(MockChoice(msg, res_data.get("done_reason", "stop")))
+    
+    prompt_tokens = res_data.get("prompt_eval_count", 0)
+    completion_tokens = res_data.get("eval_count", 0)
+    usage = MockUsage(prompt_tokens, completion_tokens)
+    
+    return MockResponse(
+        choices, 
+        usage, 
+        model=res_data.get("model", model), 
+        created=int(time.time())
+    )
 
 MAX_NUM_TOKENS = 4096
 
@@ -70,6 +219,14 @@ AVAILABLE_LLMS = [
     "ollama/deepseek-r1:32b",
     "ollama/deepseek-r1:70b",
     "ollama/deepseek-r1:671b",
+    # User's local Ollama models
+    "ollama/qwen3.5:27b",
+    "ollama/qwen2.5:7b",
+    "ollama/deepseek-r1:7b",
+    "ollama/gemma4:26b",
+    "ollama/granite4.1:30b",
+    "ollama/nemotron-3-nano:30b",
+    "ollama/llava:7b",
 ]
 
 
@@ -100,8 +257,8 @@ def get_batch_responses_from_llm(
 
     if model.startswith("ollama/"):
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
-        response = client.chat.completions.create(
-            model=model.replace("ollama/", ""),
+        response = call_ollama_v1(
+            model=model,
             messages=[
                 {"role": "system", "content": system_message},
                 *new_msg_history,
@@ -215,8 +372,8 @@ def get_batch_responses_from_llm(
 @track_token_usage
 def make_llm_call(client, model, temperature, system_message, prompt):
     if model.startswith("ollama/"):
-        return client.chat.completions.create(
-            model=model.replace("ollama/", ""),
+        return call_ollama_v1(
+            model=model,
             messages=[
                 {"role": "system", "content": system_message},
                 *prompt,
@@ -311,8 +468,8 @@ def get_response_from_llm(
         ]
     elif model.startswith("ollama/"):
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
-        response = client.chat.completions.create(
-            model=model.replace("ollama/", ""),
+        response = call_ollama_v1(
+            model=model,
             messages=[
                 {"role": "system", "content": system_message},
                 *new_msg_history,
@@ -490,11 +647,8 @@ def create_client(model) -> tuple[Any, str]:
         print(f"Using Vertex AI with model {client_model}.")
         return anthropic.AnthropicVertex(), client_model
     elif model.startswith("ollama/"):
-        print(f"Using Ollama with model {model}.")
-        return openai.OpenAI(
-            api_key=os.environ.get("OLLAMA_API_KEY", ""),
-            base_url="http://localhost:11434/v1",
-        ), model
+        print(f"Using Ollama (direct HTTP requests) with model {model}.")
+        return None, model
     elif "gpt" in model:
         print(f"Using OpenAI API with model {model}.")
         return openai.OpenAI(), model

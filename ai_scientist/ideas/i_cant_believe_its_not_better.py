@@ -16,7 +16,10 @@ from datasets import load_dataset
 from torchvision.models import resnet50
 from huggingface_hub import login
 
-login(token=os.environ["HF_TOKEN"])
+if "HF_TOKEN" in os.environ:
+    login(token=os.environ["HF_TOKEN"])
+else:
+    print("HF_TOKEN environment variable not set. Skipping HuggingFace login.")
 
 ## DATASET REFERENCE
 

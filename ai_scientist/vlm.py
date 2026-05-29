@@ -7,6 +7,7 @@ import openai
 import os
 from PIL import Image
 from ai_scientist.utils.token_tracker import track_token_usage
+from ai_scientist.llm import call_ollama_v1
 
 MAX_NUM_TOKENS = 4096
 
@@ -29,6 +30,9 @@ AVAILABLE_VLMS = [
     "ollama/qwen2.5vl:32b",
 
     "ollama/z-uo/qwen2.5vl_tools:32b",
+
+    # User's local VLM
+    "ollama/llava:7b",
 ]
 
 
@@ -52,8 +56,8 @@ def encode_image_to_base64(image_path: str) -> str:
 @track_token_usage
 def make_llm_call(client, model, temperature, system_message, prompt):
     if model.startswith("ollama/"):
-        return client.chat.completions.create(
-            model=model.replace("ollama/", ""),
+        return call_ollama_v1(
+            model=model,
             messages=[
                 {"role": "system", "content": system_message},
                 *prompt,
@@ -62,7 +66,6 @@ def make_llm_call(client, model, temperature, system_message, prompt):
             max_tokens=MAX_NUM_TOKENS,
             n=1,
             stop=None,
-            seed=0,
         )
     elif "gpt" in model:
         return client.chat.completions.create(
@@ -95,8 +98,8 @@ def make_llm_call(client, model, temperature, system_message, prompt):
 @track_token_usage
 def make_vlm_call(client, model, temperature, system_message, prompt):
     if model.startswith("ollama/"):
-        return client.chat.completions.create(
-            model=model.replace("ollama/", ""),
+        return call_ollama_v1(
+            model=model,
             messages=[
                 {"role": "system", "content": system_message},
                 *prompt,
@@ -204,11 +207,8 @@ def create_client(model: str) -> tuple[Any, str]:
         print(f"Using OpenAI API with model {model}.")
         return openai.OpenAI(), model
     elif model.startswith("ollama/"):
-        print(f"Using Ollama API with model {model}.")
-        return openai.OpenAI(
-            api_key=os.environ.get("OLLAMA_API_KEY", ""),
-            base_url="http://localhost:11434/v1"
-        ), model
+        print(f"Using Ollama API (direct HTTP requests) with model {model}.")
+        return None, model
     else:
         raise ValueError(f"Model {model} not supported.")
 
@@ -302,8 +302,8 @@ def get_batch_responses_from_vlm(
         new_msg_history = msg_history + [{"role": "user", "content": content}]
 
         if model.startswith("ollama/"):
-            response = client.chat.completions.create(
-                model=model.replace("ollama/", ""),
+            response = call_ollama_v1(
+                model=model,
                 messages=[
                     {"role": "system", "content": system_message},
                     *new_msg_history,
@@ -311,7 +311,6 @@ def get_batch_responses_from_vlm(
                 temperature=temperature,
                 max_tokens=MAX_NUM_TOKENS,
                 n=n_responses,
-                seed=0,
             )
         else:
             # Get multiple responses

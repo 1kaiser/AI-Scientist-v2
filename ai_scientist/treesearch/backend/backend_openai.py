@@ -1,11 +1,13 @@
 import json
 import logging
 import time
+import os
 
 from .utils import FunctionSpec, OutputType, opt_messages_to_list, backoff_create
 from funcy import notnone, once, select_values
 import openai
 from rich import print
+from ai_scientist.llm import call_ollama_v1
 
 logger = logging.getLogger("ai-scientist")
 
@@ -20,6 +22,7 @@ OPENAI_TIMEOUT_EXCEPTIONS = (
 def get_ai_client(model: str, max_retries=2) -> openai.OpenAI:
     if model.startswith("ollama/"):
         client = openai.OpenAI(
+            api_key=os.getenv("OLLAMA_API_KEY", "ollama"),
             base_url="http://localhost:11434/v1", 
             max_retries=max_retries
         )
@@ -34,27 +37,49 @@ def query(
     func_spec: FunctionSpec | None = None,
     **model_kwargs,
 ) -> tuple[OutputType, float, int, int, dict]:
-    client = get_ai_client(model_kwargs.get("model"), max_retries=0)
-    filtered_kwargs: dict = select_values(notnone, model_kwargs)  # type: ignore
-
+    model_name = model_kwargs.get("model", "")
     messages = opt_messages_to_list(system_message, user_message)
 
-    if func_spec is not None:
-        filtered_kwargs["tools"] = [func_spec.as_openai_tool_dict]
-        # force the model to use the function
-        filtered_kwargs["tool_choice"] = func_spec.openai_tool_choice_dict
+    if model_name.startswith("ollama/"):
+        temperature = model_kwargs.get("temperature", 0.7)
+        max_tokens = model_kwargs.get("max_tokens", 4096)
+        n = model_kwargs.get("n", 1)
+        stop = model_kwargs.get("stop", None)
+        tools = None
+        tool_choice = None
+        if func_spec is not None:
+            tools = [func_spec.as_openai_tool_dict]
+            tool_choice = func_spec.openai_tool_choice_dict
+            
+        t0 = time.time()
+        completion = call_ollama_v1(
+            model=model_name,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            n=n,
+            stop=stop,
+            tools=tools,
+            tool_choice=tool_choice
+        )
+        req_time = time.time() - t0
+    else:
+        client = get_ai_client(model_name, max_retries=0)
+        filtered_kwargs: dict = select_values(notnone, model_kwargs)  # type: ignore
 
-    if filtered_kwargs.get("model", "").startswith("ollama/"):
-       filtered_kwargs["model"] = filtered_kwargs["model"].replace("ollama/", "")
+        if func_spec is not None:
+            filtered_kwargs["tools"] = [func_spec.as_openai_tool_dict]
+            # force the model to use the function
+            filtered_kwargs["tool_choice"] = func_spec.openai_tool_choice_dict
 
-    t0 = time.time()
-    completion = backoff_create(
-        client.chat.completions.create,
-        OPENAI_TIMEOUT_EXCEPTIONS,
-        messages=messages,
-        **filtered_kwargs,
-    )
-    req_time = time.time() - t0
+        t0 = time.time()
+        completion = backoff_create(
+            client.chat.completions.create,
+            OPENAI_TIMEOUT_EXCEPTIONS,
+            messages=messages,
+            **filtered_kwargs,
+        )
+        req_time = time.time() - t0
 
     choice = completion.choices[0]
 
