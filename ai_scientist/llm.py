@@ -4,7 +4,6 @@ import re
 import time
 import subprocess
 import atexit
-import httpx
 from typing import Any
 from ai_scientist.utils.token_tracker import track_token_usage
 
@@ -13,44 +12,9 @@ import backoff
 import openai
 import requests
 
-class MockFunction:
-    def __init__(self, name, arguments):
-        self.name = name
-        self.arguments = arguments
-
-class MockToolCall:
-    def __init__(self, function):
-        self.function = function
-
-class MockMessage:
-    def __init__(self, content, tool_calls=None):
-        self.content = content
-        self.tool_calls = tool_calls
-
-class MockChoice:
-    def __init__(self, message, finish_reason="stop"):
-        self.message = message
-        self.finish_reason = finish_reason
-
-class MockCompletionTokensDetails:
-    def __init__(self, reasoning_tokens=0):
-        self.reasoning_tokens = reasoning_tokens
-
-class MockUsage:
-    def __init__(self, prompt_tokens=0, completion_tokens=0):
-        self.prompt_tokens = prompt_tokens
-        self.completion_tokens = completion_tokens
-        self.total_tokens = prompt_tokens + completion_tokens
-        self.completion_tokens_details = MockCompletionTokensDetails()
-
-class MockResponse:
-    def __init__(self, choices, usage=None, model="ollama-model", created=None):
-        import time
-        self.choices = choices
-        self.usage = usage or MockUsage()
-        self.system_fingerprint = "fp_ollama"
-        self.model = model
-        self.created = created or int(time.time())
+# Base URL for the local inference backend (llama.cpp server / Ollama /v1 / vLLM / SGLang)
+# Change this one constant to switch backends — all use the OpenAI-compatible API.
+LLAMA_BASE_URL = os.environ.get("LLAMA_BASE_URL", "http://localhost:11434/v1")
 
 _OLLAMA_HEALTHY = None
 _OLLAMA_PROCESS = None
@@ -136,218 +100,78 @@ def cleanup_ollama():
 atexit.register(cleanup_ollama)
 
 def strip_thinking_tags(text: str) -> str:
-    """Strip <think>...</think> reasoning blocks emitted by Qwen3/DeepSeek models."""
     if not text:
         return text
-    # Remove <think>...</think> blocks (possibly multi-line)
-    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    return cleaned.strip()
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
-def map_openai_messages_to_ollama(messages):
-    mapped_messages = []
-    for msg in messages:
-        role = msg.get("role")
-        content = msg.get("content")
-        images = []
-        text_parts = []
-        
-        if isinstance(content, list):
-            for part in content:
-                if part.get("type") == "text":
-                    text_parts.append(part.get("text", ""))
-                elif part.get("type") == "image_url":
-                    img_url = part.get("image_url", {}).get("url", "")
-                    if "," in img_url:
-                        base64_data = img_url.split(",")[1]
-                    else:
-                        base64_data = img_url
-                    images.append(base64_data)
-            text_content = "".join(text_parts)
-        else:
-            text_content = content or ""
-            
-        mapped_msg = {"role": role, "content": text_content}
-        if images:
-            mapped_msg["images"] = images
-        mapped_messages.append(mapped_msg)
-        
-    return mapped_messages
+def _is_local_client(client) -> bool:
+    return isinstance(client, openai.OpenAI) and "localhost" in str(getattr(client, "base_url", ""))
 
-def call_ollama_v1(model, messages, temperature=0.7, max_tokens=4096, n=1, stop=None, tools=None, tool_choice=None):
+
+def _make_local_client() -> openai.OpenAI:
+    """Return an OpenAI-compatible client pointing at the local inference backend."""
     verify_ollama_health()
-    
-    mapped_messages = map_openai_messages_to_ollama(messages)
-    clean_model = model.replace("ollama/", "")
-    
-    options = {
-        "num_ctx": 16384
-    }
-    if temperature is not None:
-        options["temperature"] = temperature
-    if max_tokens is not None:
-        options["num_predict"] = max_tokens
-    if stop is not None:
-        options["stop"] = stop
-        
-    payload = {
-        "model": clean_model,
-        "messages": mapped_messages,
-        "stream": False,
-        "options": options,
-        "keep_alive": 300,  # keep model warm for 5 min between calls
-        "think": False,  # Disable chain-of-thought for Qwen3/supported models
-    }
-    if tools is not None:
-        payload["tools"] = tools
+    return openai.OpenAI(base_url=LLAMA_BASE_URL, api_key="local")
 
-    base_url = "http://localhost:11434/api/chat"
+
+def call_local_model(model, messages, temperature=0.7, max_tokens=4096, n=1, stop=None, tools=None, tool_choice=None):
+    """Call any local OpenAI-compatible backend (Ollama /v1, llama.cpp server, vLLM, SGLang).
+
+    Switch backend by setting LLAMA_BASE_URL env var or editing the constant above.
+    """
+    clean_model = model.replace("ollama/", "")
+    client = _make_local_client()
 
     max_retries = 3
     empty_retries = 0
     t_start = time.time()
+    response = None
+
     for attempt in range(max_retries):
-        response = requests.post(base_url, json=payload, timeout=600)
-        response.raise_for_status()
-        res_data = response.json()
-        
-        msg_data = res_data.get("message", {})
-        raw_content = msg_data.get("content") or ""
-        content = strip_thinking_tags(raw_content)
-        
-        tool_calls = None
-        if "tool_calls" in msg_data and msg_data["tool_calls"]:
-            tool_calls = []
-            for tc in msg_data["tool_calls"]:
-                func_data = tc.get("function", {})
-                func_args = func_data.get("arguments", {})
-                args_str = json.dumps(func_args)
-                tool_calls.append(
-                    MockToolCall(
-                        MockFunction(func_data.get("name"), args_str)
-                    )
-                )
-        
-        # If we have content or tool calls, we're good
-        if content or tool_calls:
+        kwargs = dict(
+            model=clean_model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            n=n,
+            stop=stop,
+            timeout=600,
+            # Ollama-specific extras passed through extra_body (ignored by other backends)
+            extra_body={"keep_alive": 300, "think": False,
+                        "options": {"num_ctx": 16384}},
+        )
+        if tools is not None:
+            kwargs["tools"] = tools
+        if tool_choice is not None:
+            kwargs["tool_choice"] = tool_choice
+
+        response = client.chat.completions.create(**kwargs)
+        raw = response.choices[0].message.content or ""
+        content = strip_thinking_tags(raw)
+        if content or response.choices[0].message.tool_calls:
             break
-        
-        # Empty response — retry with slightly higher temperature
+
         empty_retries += 1
-        print(f"[Ollama] Attempt {attempt + 1}/{max_retries}: empty response from {clean_model}, retrying...", flush=True)
+        print(f"[local-llm] Attempt {attempt+1}/{max_retries}: empty response from {clean_model}, retrying...", flush=True)
         if attempt < max_retries - 1:
-            payload["options"]["temperature"] = min((temperature or 0.7) + 0.1 * (attempt + 1), 1.0)
+            kwargs["temperature"] = min((temperature or 0.7) + 0.1 * (attempt + 1), 1.0)
             time.sleep(1)
-    
-    if not content and not tool_calls:
-        # Last resort: return a placeholder so the pipeline can handle it gracefully
-        print(f"[Ollama] WARNING: {clean_model} returned empty content after {max_retries} attempts.", flush=True)
+
+    if not content and not (response and response.choices[0].message.tool_calls):
+        print(f"[local-llm] WARNING: {clean_model} returned empty content after {max_retries} attempts.", flush=True)
         content = "I was unable to generate a response. Please try again."
-    
-    prompt_tokens = res_data.get("prompt_eval_count", 0)
-    completion_tokens = res_data.get("eval_count", 0)
+        response.choices[0].message.content = content
+
     duration_s = time.time() - t_start
-    
-    # Log call for progress monitoring
+    prompt_tokens = response.usage.prompt_tokens if response and response.usage else 0
+    completion_tokens = response.usage.completion_tokens if response and response.usage else 0
     _log_llm_call(clean_model, prompt_tokens, completion_tokens, duration_s, attempt + 1, empty_retries)
-    
-    choices = []
-    msg = MockMessage(content, tool_calls)
-    choices.append(MockChoice(msg, res_data.get("done_reason", "stop")))
-    
-    usage = MockUsage(prompt_tokens, completion_tokens)
-    
-    return MockResponse(
-        choices, 
-        usage, 
-        model=res_data.get("model", model), 
-        created=int(time.time())
-    )
+    return response
 
-async def async_call_ollama_v1(model, messages, temperature=0.7, max_tokens=4096, n=1, stop=None, tools=None, tool_choice=None):
-    import asyncio
-    verify_ollama_health()
-    
-    mapped_messages = map_openai_messages_to_ollama(messages)
-    clean_model = model.replace("ollama/", "")
-    
-    options = {
-        "num_ctx": 16384
-    }
-    if temperature is not None:
-        options["temperature"] = temperature
-    if max_tokens is not None:
-        options["num_predict"] = max_tokens
-    if stop is not None:
-        options["stop"] = stop
-        
-    payload = {
-        "model": clean_model,
-        "messages": mapped_messages,
-        "stream": False,
-        "options": options,
-        "keep_alive": 300,  # keep model warm for 5 min between calls
-        "think": False,  # Disable chain-of-thought for Qwen3/supported models
-    }
-    if tools is not None:
-        payload["tools"] = tools
 
-    base_url = "http://localhost:11434/api/chat"
-
-    max_retries = 3
-    res_data = {}
-    content = ""
-    tool_calls = None
-
-    async with httpx.AsyncClient(timeout=600.0) as client:
-        for attempt in range(max_retries):
-            response = await client.post(base_url, json=payload)
-            response.raise_for_status()
-            res_data = response.json()
-            
-            msg_data = res_data.get("message", {})
-            raw_content = msg_data.get("content") or ""
-            content = strip_thinking_tags(raw_content)
-            
-            tool_calls = None
-            if "tool_calls" in msg_data and msg_data["tool_calls"]:
-                tool_calls = []
-                for tc in msg_data["tool_calls"]:
-                    func_data = tc.get("function", {})
-                    func_args = func_data.get("arguments", {})
-                    args_str = json.dumps(func_args)
-                    tool_calls.append(
-                        MockToolCall(
-                            MockFunction(func_data.get("name"), args_str)
-                        )
-                    )
-            
-            if content or tool_calls:
-                break
-            
-            print(f"[Ollama-async] Attempt {attempt + 1}/{max_retries}: empty response from {clean_model}, retrying...", flush=True)
-            if attempt < max_retries - 1:
-                payload["options"]["temperature"] = min((temperature or 0.7) + 0.1 * (attempt + 1), 1.0)
-                await asyncio.sleep(1)
-    
-    if not content and not tool_calls:
-        print(f"[Ollama-async] WARNING: {clean_model} returned empty content after {max_retries} attempts.", flush=True)
-        content = "I was unable to generate a response. Please try again."
-    
-    choices = []
-    msg = MockMessage(content, tool_calls)
-    choices.append(MockChoice(msg, res_data.get("done_reason", "stop")))
-    
-    prompt_tokens = res_data.get("prompt_eval_count", 0)
-    completion_tokens = res_data.get("eval_count", 0)
-    usage = MockUsage(prompt_tokens, completion_tokens)
-    
-    return MockResponse(
-        choices, 
-        usage, 
-        model=res_data.get("model", model), 
-        created=int(time.time())
-    )
+# Keep old name as alias so any direct callers outside this file still work.
+call_ollama_v1 = call_local_model
 
 
 MAX_NUM_TOKENS = 4096
@@ -448,24 +272,7 @@ def get_batch_responses_from_llm(
     if msg_history is None:
         msg_history = []
 
-    if model.startswith("ollama/"):
-        new_msg_history = msg_history + [{"role": "user", "content": msg}]
-        response = call_ollama_v1(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_message},
-                *new_msg_history,
-            ],
-            temperature=temperature,
-            max_tokens=MAX_NUM_TOKENS,
-            n=n_responses,
-            stop=None,
-        )
-        content = [r.message.content for r in response.choices]
-        new_msg_history = [
-            new_msg_history + [{"role": "assistant", "content": c}] for c in content
-        ]
-    elif "gpt" in model:
+    if model.startswith("ollama/") or "gpt" in model or _is_local_client(client):
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
         response = client.chat.completions.create(
             model=model,
@@ -564,19 +371,7 @@ def get_batch_responses_from_llm(
 
 @track_token_usage
 def make_llm_call(client, model, temperature, system_message, prompt):
-    if model.startswith("ollama/"):
-        return call_ollama_v1(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_message},
-                *prompt,
-            ],
-            temperature=temperature,
-            max_tokens=MAX_NUM_TOKENS,
-            n=1,
-            stop=None,
-        )
-    elif "gpt" in model:
+    if "gpt" in model or _is_local_client(client):
         return client.chat.completions.create(
             model=model,
             messages=[
@@ -659,31 +454,16 @@ def get_response_from_llm(
                 ],
             }
         ]
-    elif model.startswith("ollama/"):
-        new_msg_history = msg_history + [{"role": "user", "content": msg}]
-        response = call_ollama_v1(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_message},
-                *new_msg_history,
-            ],
-            temperature=temperature,
-            max_tokens=MAX_NUM_TOKENS,
-            n=1,
-            stop=None,
-        )
-        content = response.choices[0].message.content
-        new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
-    elif "gpt" in model:
+    elif model.startswith("ollama/") or "gpt" in model or _is_local_client(client):
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
         response = make_llm_call(
             client,
-            model,
+            model.replace("ollama/", ""),
             temperature,
             system_message=system_message,
             prompt=new_msg_history,
         )
-        content = response.choices[0].message.content
+        content = strip_thinking_tags(response.choices[0].message.content or "")
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
     elif "o1" in model or "o3" in model:
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
@@ -840,8 +620,10 @@ def create_client(model) -> tuple[Any, str]:
         print(f"Using Vertex AI with model {client_model}.")
         return anthropic.AnthropicVertex(), client_model
     elif model.startswith("ollama/"):
-        print(f"Using Ollama (direct HTTP requests) with model {model}.")
-        return None, model
+        clean = model.replace("ollama/", "")
+        print(f"Using local inference backend ({LLAMA_BASE_URL}) with model {clean}.")
+        verify_ollama_health()
+        return openai.OpenAI(base_url=LLAMA_BASE_URL, api_key="local"), clean
     elif "gpt" in model:
         print(f"Using OpenAI API with model {model}.")
         return openai.OpenAI(), model
