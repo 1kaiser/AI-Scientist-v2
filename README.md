@@ -184,6 +184,22 @@ Once the initial experimental stage is complete, you will find a timestamped log
 After all experiment stages are complete, the writeup stage begins. The writeup stage typically takes about 20 to 30 minutes in total. Once it finishes, you should see `timestamp_ideaname.pdf` in the `timestamp_ideaname` folder.
 For this example run, all stages typically finish within several hours.
 
+### Asynchronous Ollama Lifecycle Management & Orchestration
+
+We provide an orchestration script to demonstrate how to manage the lifecycle of an Ollama server programmatically, run concurrent async inferences, and dynamically load/unload models to optimize GPU VRAM memory:
+
+- **Location**: [ollama_async_orchestrator.py](file:///home/kaiser/projects/test/AI-Scientist-v2/ollama_async_orchestrator.py)
+- **Features**:
+  - Automatically checks if port 11434 is in use. If free, it starts the Ollama daemon process asynchronously in the background and polls the API until ready.
+  - Dispatches parallel chat completion queries to different models (e.g., `qwen2.5:7b` and `llava:7b`) concurrently using Python `asyncio` and `httpx`.
+  - Dynamically unloads models from GPU memory (VRAM) immediately after use by setting the `keep_alive` parameter to `0` or sending an explicit unload request to the Ollama endpoint.
+  - Automatically terminates and cleans up the programmatically started Ollama daemon process upon script exit.
+
+**To run the async orchestrator script:**
+```bash
+python ollama_async_orchestrator.py
+```
+
 ## Citing The AI Scientist-v2
 
 If you use **The AI Scientist-v2** in your research, please cite our work as follows:
