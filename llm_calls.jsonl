@@ -1,0 +1,9 @@
+{"ts": "2026-05-30T11:30:35", "call_num": 1, "model": "qwen3.5:27b", "prompt_tokens": 4404, "completion_tokens": 82, "duration_s": 14.29, "attempt": 1, "empty_retries": 0, "pid": 2312356}
+{"ts": "2026-05-30T11:32:03", "call_num": 2, "model": "qwen3.5:27b", "prompt_tokens": 5712, "completion_tokens": 1642, "duration_s": 88.03, "attempt": 1, "empty_retries": 0, "pid": 2318604}
+{"ts": "2026-05-30T11:33:40", "call_num": 2, "model": "qwen3.5:27b", "prompt_tokens": 5712, "completion_tokens": 1734, "duration_s": 185.21, "attempt": 1, "empty_retries": 0, "pid": 2318603}
+{"ts": "2026-05-30T11:34:40", "call_num": 1, "model": "qwen3.5:27b", "prompt_tokens": 4404, "completion_tokens": 205, "duration_s": 16.92, "attempt": 1, "empty_retries": 0, "pid": 2540381}
+{"ts": "2026-05-30T11:36:27", "call_num": 2, "model": "qwen3.5:27b", "prompt_tokens": 5958, "completion_tokens": 2521, "duration_s": 106.76, "attempt": 1, "empty_retries": 0, "pid": 2541644}
+{"ts": "2026-05-30T11:38:02", "call_num": 2, "model": "qwen3.5:27b", "prompt_tokens": 5958, "completion_tokens": 2497, "duration_s": 201.74, "attempt": 1, "empty_retries": 0, "pid": 2541646}
+{"ts": "2026-05-30T11:38:31", "call_num": 1, "model": "qwen3.5:27b", "prompt_tokens": 4404, "completion_tokens": 73, "duration_s": 11.95, "attempt": 1, "empty_retries": 0, "pid": 2544704}
+{"ts": "2026-05-30T11:40:09", "call_num": 2, "model": "qwen3.5:27b", "prompt_tokens": 5694, "completion_tokens": 2298, "duration_s": 98.38, "attempt": 1, "empty_retries": 0, "pid": 2545780}
+{"ts": "2026-05-30T11:40:58", "call_num": 3, "model": "qwen3.5:27b", "prompt_tokens": 10132, "completion_tokens": 274, "duration_s": 25.13, "attempt": 1, "empty_retries": 0, "pid": 2545780}

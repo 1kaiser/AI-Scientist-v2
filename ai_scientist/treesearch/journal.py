@@ -467,9 +467,12 @@ class Journal:
                 prompt["Candidates"] += candidate_info
 
         try:
-            if cfg is None or cfg.agent.get("select_node", None) is None:
+            if cfg is None:
                 model = "gpt-4o"
                 temperature = 0.3
+            elif cfg.agent.get("select_node", None) is None:
+                model = cfg.agent.feedback.model
+                temperature = cfg.agent.feedback.temp
             else:
                 model = cfg.agent.select_node.model
                 temperature = cfg.agent.select_node.temp
@@ -604,8 +607,8 @@ class Journal:
         stage_summary = query(
             system_message=summary_prompt,
             user_message="Generate a comprehensive summary of the experimental findings in this stage",
-            model=cfg.agent.summary.model if cfg.agent.get("summary", None) else "gpt-4o",
-            temperature=cfg.agent.summary.temp if cfg.agent.get("summary", None) else 0.3
+            model=cfg.agent.summary.model if cfg.agent.get("summary", None) else cfg.agent.feedback.model,
+            temperature=cfg.agent.summary.temp if cfg.agent.get("summary", None) else cfg.agent.feedback.temp
         )
 
         with open(os.path.join(notes_dir, f"{stage_name}_summary.txt"), "w") as f:

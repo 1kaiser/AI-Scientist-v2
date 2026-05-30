@@ -2085,7 +2085,11 @@ class ParallelAgent:
                 }
             )
         else:
-            memory_summary = self.journal.generate_summary(include_code=False)
+            memory_summary = self.journal.generate_summary(
+                include_code=False,
+                model=self.cfg.agent.feedback.model,
+                temp=self.cfg.agent.feedback.temp
+            )
 
         print("Submitting tasks to process pool")
         futures = []

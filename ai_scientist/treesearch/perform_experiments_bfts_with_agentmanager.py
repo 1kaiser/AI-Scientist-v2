@@ -229,7 +229,11 @@ def perform_experiments_bfts(config_path: str):
                     }
                 )
             else:
-                current_findings = journal.generate_summary(include_code=False)
+                current_findings = journal.generate_summary(
+                    include_code=False,
+                    model=cfg.agent.feedback.model,
+                    temp=cfg.agent.feedback.temp
+                )
 
             best_metric = journal.get_best_node(cfg=cfg)
 
