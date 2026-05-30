@@ -1136,6 +1136,13 @@ def get_gpu_count() -> int:
             # Filter out empty strings and -1 values
             devices = [d for d in cuda_visible_devices.split(",") if d and d != "-1"]
             return len(devices)
+        # Try importing torch as fallback
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return torch.cuda.device_count()
+        except ImportError:
+            pass
         return 0
 
 
