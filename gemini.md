@@ -64,6 +64,14 @@ To bypass the `openai` Python SDK and gain direct control over inference paramet
 6. **Dynamic Model Loading & Unloading**:
    - Every REST request payload specifies `"keep_alive": 0` (or `"0s"` equivalent) to enforce immediate model unloading from VRAM/RAM after generation. This allows active scheduling and prevents OOM crashes when alternating between large coding, writing, and VLM models.
 
+7. **Programmatic Server Management & Auto-Exit**:
+   - The health check `verify_ollama_health()` automatically runs the `/home/kaiser/ollama/bin/ollama serve` process in the background if the server is not already active. 
+   - An exit hook registered via `atexit` automatically shuts down/terminates the programmatically started Ollama process on script exit, preventing resource leaks.
+
+8. **Asynchronous API Support**:
+   - Implemented `async_call_ollama_v1()` utilizing `httpx.AsyncClient` to support concurrent asynchronous inferences.
+
+
 ---
 
 ## 4. Pipeline Bugfixes & Stability Patches

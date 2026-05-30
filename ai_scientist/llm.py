@@ -2,6 +2,9 @@ import json
 import os
 import re
 import time
+import subprocess
+import atexit
+import httpx
 from typing import Any
 from ai_scientist.utils.token_tracker import track_token_usage
 
@@ -50,9 +53,10 @@ class MockResponse:
         self.created = created or int(time.time())
 
 _OLLAMA_HEALTHY = None
+_OLLAMA_PROCESS = None
 
 def verify_ollama_health():
-    global _OLLAMA_HEALTHY
+    global _OLLAMA_HEALTHY, _OLLAMA_PROCESS
     if _OLLAMA_HEALTHY is True:
         return
     base_url = "http://localhost:11434"
@@ -63,11 +67,43 @@ def verify_ollama_health():
             return
     except requests.exceptions.RequestException:
         pass
+
+    # Try starting Ollama serve automatically in the background
+    try:
+        _OLLAMA_PROCESS = subprocess.Popen(
+            ["/home/kaiser/ollama/bin/ollama", "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        # Wait up to 10 seconds for the server to listen
+        for _ in range(20):
+            try:
+                response = requests.get(f"{base_url}/", timeout=1)
+                if response.status_code == 200:
+                    _OLLAMA_HEALTHY = True
+                    return
+            except requests.exceptions.RequestException:
+                pass
+            time.sleep(0.5)
+    except Exception as e:
+        pass
+
     raise ConnectionError(
-        f"Ollama server is not reachable at {base_url}. "
-        "Please ensure the Ollama daemon is running. "
-        "You can start it by running 'ollama serve' or restarting the Ollama service."
+        f"Ollama server is not reachable at {base_url} and auto-start failed. "
+        "Please ensure the Ollama daemon is running."
     )
+
+def cleanup_ollama():
+    global _OLLAMA_PROCESS
+    if _OLLAMA_PROCESS is not None:
+        print("[Ollama] Shutting down automatically started server...", flush=True)
+        _OLLAMA_PROCESS.terminate()
+        try:
+            _OLLAMA_PROCESS.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _OLLAMA_PROCESS.kill()
+
+atexit.register(cleanup_ollama)
 
 def map_openai_messages_to_ollama(messages):
     mapped_messages = []
@@ -157,6 +193,67 @@ def call_ollama_v1(model, messages, temperature=0.7, max_tokens=4096, n=1, stop=
         model=res_data.get("model", model), 
         created=int(time.time())
     )
+
+async def async_call_ollama_v1(model, messages, temperature=0.7, max_tokens=4096, n=1, stop=None, tools=None, tool_choice=None):
+    verify_ollama_health()
+    
+    mapped_messages = map_openai_messages_to_ollama(messages)
+    
+    options = {
+        "num_ctx": 32768
+    }
+    if temperature is not None:
+        options["temperature"] = temperature
+    if max_tokens is not None:
+        options["num_predict"] = max_tokens
+    if stop is not None:
+        options["stop"] = stop
+        
+    payload = {
+        "model": model.replace("ollama/", ""),
+        "messages": mapped_messages,
+        "stream": False,
+        "options": options,
+        "keep_alive": 0
+    }
+    if tools is not None:
+        payload["tools"] = tools
+        
+    base_url = "http://localhost:11434/api/chat"
+    async with httpx.AsyncClient(timeout=600.0) as client:
+        response = await client.post(base_url, json=payload)
+        response.raise_for_status()
+        res_data = response.json()
+        
+    choices = []
+    msg_data = res_data.get("message", {})
+    tool_calls = None
+    if "tool_calls" in msg_data and msg_data["tool_calls"]:
+        tool_calls = []
+        for tc in msg_data["tool_calls"]:
+            func_data = tc.get("function", {})
+            func_args = func_data.get("arguments", {})
+            args_str = json.dumps(func_args)
+            tool_calls.append(
+                MockToolCall(
+                    MockFunction(func_data.get("name"), args_str)
+                )
+            )
+            
+    msg = MockMessage(msg_data.get("content"), tool_calls)
+    choices.append(MockChoice(msg, res_data.get("done_reason", "stop")))
+    
+    prompt_tokens = res_data.get("prompt_eval_count", 0)
+    completion_tokens = res_data.get("eval_count", 0)
+    usage = MockUsage(prompt_tokens, completion_tokens)
+    
+    return MockResponse(
+        choices, 
+        usage, 
+        model=res_data.get("model", model), 
+        created=int(time.time())
+    )
+
 
 MAX_NUM_TOKENS = 4096
 

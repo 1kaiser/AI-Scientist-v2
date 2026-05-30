@@ -90,6 +90,8 @@ You can run AI Scientist-v2 fully locally using Ollama models. This eliminates t
 3. **Dynamic Context Allocation:** Requests automatically specify `"options": {"num_ctx": 32768}` to ensure a 32k context size is used natively.
 4. **Health Check Verification:** Automatically checks the responsiveness of the Ollama server before dispatching queries.
 5. **Dynamic Memory Management:** Requests automatically specify `"keep_alive": 0` to unload models from memory immediately after execution, preventing GPU VRAM or CPU RAM exhaustion when cycling between large models.
+6. **Programmatic Server Management & Auto-Exit:** Automatically starts the Ollama server in the background if it is not already running. Cleans up and kills the programmatically started Ollama processes when the Python pipeline finishes.
+7. **Async Client Integration:** Provides `async_call_ollama_v1` using `httpx` to support asynchronous/concurrent network inference queries.
 
 #### Semantic Scholar API (Literature Search)
 
