@@ -105,6 +105,15 @@ def cleanup_ollama():
 
 atexit.register(cleanup_ollama)
 
+def strip_thinking_tags(text: str) -> str:
+    """Strip <think>...</think> reasoning blocks emitted by Qwen3/DeepSeek models."""
+    if not text:
+        return text
+    # Remove <think>...</think> blocks (possibly multi-line)
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    return cleaned.strip()
+
+
 def map_openai_messages_to_ollama(messages):
     mapped_messages = []
     for msg in messages:
@@ -139,6 +148,7 @@ def call_ollama_v1(model, messages, temperature=0.7, max_tokens=4096, n=1, stop=
     verify_ollama_health()
     
     mapped_messages = map_openai_messages_to_ollama(messages)
+    clean_model = model.replace("ollama/", "")
     
     options = {
         "num_ctx": 32768
@@ -151,36 +161,58 @@ def call_ollama_v1(model, messages, temperature=0.7, max_tokens=4096, n=1, stop=
         options["stop"] = stop
         
     payload = {
-        "model": model.replace("ollama/", ""),
+        "model": clean_model,
         "messages": mapped_messages,
         "stream": False,
         "options": options,
-        "keep_alive": 0
+        "keep_alive": 0,
+        "think": False,  # Disable chain-of-thought for Qwen3/supported models
     }
     if tools is not None:
         payload["tools"] = tools
         
     base_url = "http://localhost:11434/api/chat"
-    response = requests.post(base_url, json=payload)
-    response.raise_for_status()
-    res_data = response.json()
     
-    choices = []
-    msg_data = res_data.get("message", {})
-    tool_calls = None
-    if "tool_calls" in msg_data and msg_data["tool_calls"]:
-        tool_calls = []
-        for tc in msg_data["tool_calls"]:
-            func_data = tc.get("function", {})
-            func_args = func_data.get("arguments", {})
-            args_str = json.dumps(func_args)
-            tool_calls.append(
-                MockToolCall(
-                    MockFunction(func_data.get("name"), args_str)
+    max_retries = 3
+    for attempt in range(max_retries):
+        response = requests.post(base_url, json=payload, timeout=600)
+        response.raise_for_status()
+        res_data = response.json()
+        
+        msg_data = res_data.get("message", {})
+        raw_content = msg_data.get("content") or ""
+        content = strip_thinking_tags(raw_content)
+        
+        tool_calls = None
+        if "tool_calls" in msg_data and msg_data["tool_calls"]:
+            tool_calls = []
+            for tc in msg_data["tool_calls"]:
+                func_data = tc.get("function", {})
+                func_args = func_data.get("arguments", {})
+                args_str = json.dumps(func_args)
+                tool_calls.append(
+                    MockToolCall(
+                        MockFunction(func_data.get("name"), args_str)
+                    )
                 )
-            )
-            
-    msg = MockMessage(msg_data.get("content"), tool_calls)
+        
+        # If we have content or tool calls, we're good
+        if content or tool_calls:
+            break
+        
+        # Empty response — retry with slightly higher temperature
+        print(f"[Ollama] Attempt {attempt + 1}/{max_retries}: empty response from {clean_model}, retrying...", flush=True)
+        if attempt < max_retries - 1:
+            payload["options"]["temperature"] = min((temperature or 0.7) + 0.1 * (attempt + 1), 1.0)
+            time.sleep(1)
+    
+    if not content and not tool_calls:
+        # Last resort: return a placeholder so the pipeline can handle it gracefully
+        print(f"[Ollama] WARNING: {clean_model} returned empty content after {max_retries} attempts.", flush=True)
+        content = "I was unable to generate a response. Please try again."
+        
+    choices = []
+    msg = MockMessage(content, tool_calls)
     choices.append(MockChoice(msg, res_data.get("done_reason", "stop")))
     
     prompt_tokens = res_data.get("prompt_eval_count", 0)
@@ -195,9 +227,11 @@ def call_ollama_v1(model, messages, temperature=0.7, max_tokens=4096, n=1, stop=
     )
 
 async def async_call_ollama_v1(model, messages, temperature=0.7, max_tokens=4096, n=1, stop=None, tools=None, tool_choice=None):
+    import asyncio
     verify_ollama_health()
     
     mapped_messages = map_openai_messages_to_ollama(messages)
+    clean_model = model.replace("ollama/", "")
     
     options = {
         "num_ctx": 32768
@@ -210,37 +244,60 @@ async def async_call_ollama_v1(model, messages, temperature=0.7, max_tokens=4096
         options["stop"] = stop
         
     payload = {
-        "model": model.replace("ollama/", ""),
+        "model": clean_model,
         "messages": mapped_messages,
         "stream": False,
         "options": options,
-        "keep_alive": 0
+        "keep_alive": 0,
+        "think": False,  # Disable chain-of-thought for Qwen3/supported models
     }
     if tools is not None:
         payload["tools"] = tools
         
     base_url = "http://localhost:11434/api/chat"
-    async with httpx.AsyncClient(timeout=600.0) as client:
-        response = await client.post(base_url, json=payload)
-        response.raise_for_status()
-        res_data = response.json()
-        
-    choices = []
-    msg_data = res_data.get("message", {})
+    
+    max_retries = 3
+    res_data = {}
+    content = ""
     tool_calls = None
-    if "tool_calls" in msg_data and msg_data["tool_calls"]:
-        tool_calls = []
-        for tc in msg_data["tool_calls"]:
-            func_data = tc.get("function", {})
-            func_args = func_data.get("arguments", {})
-            args_str = json.dumps(func_args)
-            tool_calls.append(
-                MockToolCall(
-                    MockFunction(func_data.get("name"), args_str)
-                )
-            )
+    
+    async with httpx.AsyncClient(timeout=600.0) as client:
+        for attempt in range(max_retries):
+            response = await client.post(base_url, json=payload)
+            response.raise_for_status()
+            res_data = response.json()
             
-    msg = MockMessage(msg_data.get("content"), tool_calls)
+            msg_data = res_data.get("message", {})
+            raw_content = msg_data.get("content") or ""
+            content = strip_thinking_tags(raw_content)
+            
+            tool_calls = None
+            if "tool_calls" in msg_data and msg_data["tool_calls"]:
+                tool_calls = []
+                for tc in msg_data["tool_calls"]:
+                    func_data = tc.get("function", {})
+                    func_args = func_data.get("arguments", {})
+                    args_str = json.dumps(func_args)
+                    tool_calls.append(
+                        MockToolCall(
+                            MockFunction(func_data.get("name"), args_str)
+                        )
+                    )
+            
+            if content or tool_calls:
+                break
+            
+            print(f"[Ollama-async] Attempt {attempt + 1}/{max_retries}: empty response from {clean_model}, retrying...", flush=True)
+            if attempt < max_retries - 1:
+                payload["options"]["temperature"] = min((temperature or 0.7) + 0.1 * (attempt + 1), 1.0)
+                await asyncio.sleep(1)
+    
+    if not content and not tool_calls:
+        print(f"[Ollama-async] WARNING: {clean_model} returned empty content after {max_retries} attempts.", flush=True)
+        content = "I was unable to generate a response. Please try again."
+    
+    choices = []
+    msg = MockMessage(content, tool_calls)
     choices.append(MockChoice(msg, res_data.get("done_reason", "stop")))
     
     prompt_tokens = res_data.get("prompt_eval_count", 0)
