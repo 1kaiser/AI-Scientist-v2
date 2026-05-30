@@ -181,7 +181,7 @@ def call_ollama_v1(model, messages, temperature=0.7, max_tokens=4096, n=1, stop=
     clean_model = model.replace("ollama/", "")
     
     options = {
-        "num_ctx": 32768
+        "num_ctx": 16384
     }
     if temperature is not None:
         options["temperature"] = temperature
@@ -272,7 +272,7 @@ async def async_call_ollama_v1(model, messages, temperature=0.7, max_tokens=4096
     clean_model = model.replace("ollama/", "")
     
     options = {
-        "num_ctx": 32768
+        "num_ctx": 16384
     }
     if temperature is not None:
         options["temperature"] = temperature
