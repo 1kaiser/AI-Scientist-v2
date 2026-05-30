@@ -118,7 +118,8 @@ def call_ollama_v1(model, messages, temperature=0.7, max_tokens=4096, n=1, stop=
         "model": model.replace("ollama/", ""),
         "messages": mapped_messages,
         "stream": False,
-        "options": options
+        "options": options,
+        "keep_alive": 0
     }
     if tools is not None:
         payload["tools"] = tools

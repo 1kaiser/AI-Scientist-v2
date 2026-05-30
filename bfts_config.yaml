@@ -54,13 +54,13 @@ agent:
 
   # LLM settings for coding
   code:
-    model: "ollama/granite4.1:30b"
+    model: "ollama/qwen3.5:27b"
     temp: 0.7
     max_tokens: 8192
 
   # LLM settings for evaluating program output / tracebacks
   feedback:
-    model: "ollama/granite4.1:30b"
+    model: "ollama/qwen3.5:27b"
     temp: 0.5
     max_tokens: 4096
 

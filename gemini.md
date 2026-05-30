@@ -61,6 +61,9 @@ To bypass the `openai` Python SDK and gain direct control over inference paramet
 5. **Response Mocks for Compatibility**:
    - Stubs out the response object using `MockResponse`, `MockUsage`, `MockChoice`, `MockMessage`, and `MockToolCall` classes to replicate attributes accessed by the treesearch backend (e.g. `choices[0].message.content`, `usage.prompt_tokens`, `system_fingerprint`).
 
+6. **Dynamic Model Loading & Unloading**:
+   - Every REST request payload specifies `"keep_alive": 0` (or `"0s"` equivalent) to enforce immediate model unloading from VRAM/RAM after generation. This allows active scheduling and prevents OOM crashes when alternating between large coding, writing, and VLM models.
+
 ---
 
 ## 4. Pipeline Bugfixes & Stability Patches

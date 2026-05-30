@@ -89,6 +89,7 @@ You can run AI Scientist-v2 fully locally using Ollama models. This eliminates t
 2. **Native REST Client Integration:** Bypasses the standard Python SDK and routes calls directly to the local `/api/chat` endpoint at `http://localhost:11434`.
 3. **Dynamic Context Allocation:** Requests automatically specify `"options": {"num_ctx": 32768}` to ensure a 32k context size is used natively.
 4. **Health Check Verification:** Automatically checks the responsiveness of the Ollama server before dispatching queries.
+5. **Dynamic Memory Management:** Requests automatically specify `"keep_alive": 0` to unload models from memory immediately after execution, preventing GPU VRAM or CPU RAM exhaustion when cycling between large models.
 
 #### Semantic Scholar API (Literature Search)
 
