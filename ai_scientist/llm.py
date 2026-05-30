@@ -54,6 +54,36 @@ class MockResponse:
 
 _OLLAMA_HEALTHY = None
 _OLLAMA_PROCESS = None
+_LLM_CALL_COUNT = 0
+_LLM_LOG_PATH = None
+
+def _log_llm_call(model, prompt_tokens, completion_tokens, duration_s, attempt, empty_retries):
+    """Append a line to the LLM call log for progress monitoring."""
+    global _LLM_CALL_COUNT, _LLM_LOG_PATH
+    _LLM_CALL_COUNT += 1
+    
+    if _LLM_LOG_PATH is None:
+        # Try to find the experiment log dir from env or use a default
+        root = os.environ.get("AI_SCIENTIST_ROOT", os.getcwd())
+        log_dir = os.path.join(root, "llm_calls.jsonl")
+        _LLM_LOG_PATH = log_dir
+    
+    entry = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "call_num": _LLM_CALL_COUNT,
+        "model": model,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "duration_s": round(duration_s, 2),
+        "attempt": attempt,
+        "empty_retries": empty_retries,
+        "pid": os.getpid(),
+    }
+    try:
+        with open(_LLM_LOG_PATH, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass  # Never break the pipeline for logging
 
 def verify_ollama_health():
     global _OLLAMA_HEALTHY, _OLLAMA_PROCESS
@@ -174,6 +204,8 @@ def call_ollama_v1(model, messages, temperature=0.7, max_tokens=4096, n=1, stop=
     base_url = "http://localhost:11434/api/chat"
     
     max_retries = 3
+    empty_retries = 0
+    t_start = time.time()
     for attempt in range(max_retries):
         response = requests.post(base_url, json=payload, timeout=600)
         response.raise_for_status()
@@ -201,6 +233,7 @@ def call_ollama_v1(model, messages, temperature=0.7, max_tokens=4096, n=1, stop=
             break
         
         # Empty response — retry with slightly higher temperature
+        empty_retries += 1
         print(f"[Ollama] Attempt {attempt + 1}/{max_retries}: empty response from {clean_model}, retrying...", flush=True)
         if attempt < max_retries - 1:
             payload["options"]["temperature"] = min((temperature or 0.7) + 0.1 * (attempt + 1), 1.0)
@@ -210,13 +243,18 @@ def call_ollama_v1(model, messages, temperature=0.7, max_tokens=4096, n=1, stop=
         # Last resort: return a placeholder so the pipeline can handle it gracefully
         print(f"[Ollama] WARNING: {clean_model} returned empty content after {max_retries} attempts.", flush=True)
         content = "I was unable to generate a response. Please try again."
-        
+    
+    prompt_tokens = res_data.get("prompt_eval_count", 0)
+    completion_tokens = res_data.get("eval_count", 0)
+    duration_s = time.time() - t_start
+    
+    # Log call for progress monitoring
+    _log_llm_call(clean_model, prompt_tokens, completion_tokens, duration_s, attempt + 1, empty_retries)
+    
     choices = []
     msg = MockMessage(content, tool_calls)
     choices.append(MockChoice(msg, res_data.get("done_reason", "stop")))
     
-    prompt_tokens = res_data.get("prompt_eval_count", 0)
-    completion_tokens = res_data.get("eval_count", 0)
     usage = MockUsage(prompt_tokens, completion_tokens)
     
     return MockResponse(
