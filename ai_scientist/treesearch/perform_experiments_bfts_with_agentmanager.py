@@ -142,11 +142,12 @@ def journal_to_rich_tree(journal: Journal, cfg):
             s = "[red]◍ bug"
         else:
             style = "bold " if node is best_node else ""
-
+            v = node.metric.value
+            metric_str = f"{v:.3f}" if isinstance(v, (int, float)) else "ok"
             if node is best_node:
-                s = f"[{style}green]● {node.metric.value:.3f} (best)"
+                s = f"[{style}green]● {metric_str} (best)"
             else:
-                s = f"[{style}green]● {node.metric.value:.3f}"
+                s = f"[{style}green]● {metric_str}"
 
         subtree = tree.add(s)
         for child in node.children:
