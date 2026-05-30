@@ -195,14 +195,14 @@ def call_ollama_v1(model, messages, temperature=0.7, max_tokens=4096, n=1, stop=
         "messages": mapped_messages,
         "stream": False,
         "options": options,
-        "keep_alive": 0,
+        "keep_alive": 300,  # keep model warm for 5 min between calls
         "think": False,  # Disable chain-of-thought for Qwen3/supported models
     }
     if tools is not None:
         payload["tools"] = tools
-        
+
     base_url = "http://localhost:11434/api/chat"
-    
+
     max_retries = 3
     empty_retries = 0
     t_start = time.time()
@@ -286,19 +286,19 @@ async def async_call_ollama_v1(model, messages, temperature=0.7, max_tokens=4096
         "messages": mapped_messages,
         "stream": False,
         "options": options,
-        "keep_alive": 0,
+        "keep_alive": 300,  # keep model warm for 5 min between calls
         "think": False,  # Disable chain-of-thought for Qwen3/supported models
     }
     if tools is not None:
         payload["tools"] = tools
-        
+
     base_url = "http://localhost:11434/api/chat"
-    
+
     max_retries = 3
     res_data = {}
     content = ""
     tool_calls = None
-    
+
     async with httpx.AsyncClient(timeout=600.0) as client:
         for attempt in range(max_retries):
             response = await client.post(base_url, json=payload)

@@ -35,7 +35,7 @@ debug:
 # agent hyperparams
 agent:
   type: parallel
-  num_workers: 4
+  num_workers: 1  # single GPU 24GB can only run one 27B model at a time; >1 just queues
   stages:
     stage1_max_iters: 20
     stage2_max_iters: 12
@@ -46,7 +46,7 @@ agent:
   # whether to instruct the agent to use CV (set to 1 to disable)
   k_fold_validation: 1
   multi_seed_eval:
-    num_seeds: 3 # should be the same as num_workers if num_workers < 3. Otherwise, set it to be 3.
+    num_seeds: 1  # match num_workers
   # whether to instruct the agent to generate a prediction function
   expose_prediction: False
   # whether to provide the agent with a preview of the data

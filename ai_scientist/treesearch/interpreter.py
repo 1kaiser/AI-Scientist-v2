@@ -14,7 +14,7 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass
-from multiprocessing import Process, Queue
+from multiprocessing import Process, Queue, get_context
 from pathlib import Path
 
 import humanize
@@ -166,8 +166,9 @@ class Interpreter:
         # - result_outq: receive stdout/stderr from child
         # - event_outq: receive events from child (e.g. state:ready, state:finished)
         # trunk-ignore(mypy/var-annotated)
-        self.code_inq, self.result_outq, self.event_outq = Queue(), Queue(), Queue()
-        self.process = Process(
+        ctx = get_context("spawn")
+        self.code_inq, self.result_outq, self.event_outq = ctx.Queue(), ctx.Queue(), ctx.Queue()
+        self.process = ctx.Process(
             target=self._run_session,
             args=(self.code_inq, self.result_outq, self.event_outq),
         )
