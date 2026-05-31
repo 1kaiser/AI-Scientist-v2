@@ -54,7 +54,7 @@ agent:
 
   # LLM settings for coding
   code:
-    model: "ollama/qwen3.5:27b"
+    model: "ollama/qwen2.5-coder:7b"
     temp: 0.7
     max_tokens: 8192
 

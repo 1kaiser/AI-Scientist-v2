@@ -15,6 +15,7 @@ from ai_scientist.llm import (
     extract_json_between_markers,
     create_client,
     AVAILABLE_LLMS,
+    route_model,
 )
 
 from ai_scientist.utils.token_tracker import track_token_usage
@@ -42,20 +43,31 @@ def remove_accents_and_clean(s):
     return ascii_str
 
 
-def compile_latex(cwd, pdf_file, timeout=30):
+def _pdflatex_works():
+    """Check if pdflatex can generate the fmt file (not just exist as a binary)."""
+    import shutil as _shutil
+    if not _shutil.which("pdflatex"):
+        return False
+    try:
+        r = subprocess.run(["pdflatex", "--version"], capture_output=True, text=True, timeout=10)
+        # If pdflatex needs mktexfmt and it fails, the output contains the error
+        return "fmt" not in r.stderr.lower() and r.returncode == 0
+    except Exception:
+        return False
+
+
+def compile_latex(cwd, pdf_file, timeout=120):
     print("GENERATING LATEX")
 
-    commands = [
-        ["pdflatex", "-interaction=nonstopmode", "template.tex"],
-        ["bibtex", "template"],
-        ["pdflatex", "-interaction=nonstopmode", "template.tex"],
-        ["pdflatex", "-interaction=nonstopmode", "template.tex"],
-    ]
+    # Prefer tectonic (standalone, no format files needed) over pdflatex
+    import shutil as _shutil
+    use_tectonic = bool(_shutil.which("tectonic"))
 
-    for command in commands:
+    if use_tectonic:
+        print("Using tectonic for PDF compilation")
         try:
             result = subprocess.run(
-                command,
+                ["tectonic", "template.tex"],
                 cwd=cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -65,20 +77,37 @@ def compile_latex(cwd, pdf_file, timeout=30):
             print("Standard Output:\n", result.stdout)
             print("Standard Error:\n", result.stderr)
         except subprocess.TimeoutExpired:
-            print(
-                f"EXCEPTION in compile_latex: LaTeX timed out after {timeout} seconds."
-            )
+            print(f"EXCEPTION in compile_latex: tectonic timed out after {timeout}s.")
+        except Exception:
+            print("EXCEPTION in compile_latex with tectonic:")
             print(traceback.format_exc())
-        except subprocess.CalledProcessError:
-            print(
-                f"EXCEPTION in compile_latex: Error running command {' '.join(command)}"
-            )
-            print(traceback.format_exc())
+    else:
+        print("Using pdflatex for PDF compilation")
+        commands = [
+            ["pdflatex", "-interaction=nonstopmode", "template.tex"],
+            ["bibtex", "template"],
+            ["pdflatex", "-interaction=nonstopmode", "template.tex"],
+            ["pdflatex", "-interaction=nonstopmode", "template.tex"],
+        ]
+        for command in commands:
+            try:
+                result = subprocess.run(
+                    command, cwd=cwd, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True, timeout=timeout,
+                )
+                print("Standard Output:\n", result.stdout)
+                print("Standard Error:\n", result.stderr)
+            except subprocess.TimeoutExpired:
+                print(f"EXCEPTION in compile_latex: timed out after {timeout}s.")
+            except subprocess.CalledProcessError:
+                print(f"EXCEPTION in compile_latex: Error running {' '.join(command)}")
 
     print("FINISHED GENERATING LATEX")
 
+    # tectonic outputs <basename>.pdf (template.pdf) in cwd
+    generated_pdf = osp.join(cwd, "template.pdf")
     try:
-        shutil.move(osp.join(cwd, "template.pdf"), pdf_file)
+        shutil.move(generated_pdf, pdf_file)
     except FileNotFoundError:
         print("Failed to rename PDF.")
         print("EXCEPTION in compile_latex while moving PDF:")
@@ -448,6 +477,8 @@ This JSON will be automatically parsed, so ensure the format is precise."""
         if json_output is None:
             print("No JSON found in citation response, skipping.")
             return None, False
+        if isinstance(json_output, list):
+            json_output = json_output[0] if json_output else {}
         query = json_output.get("Query") or json_output.get("query") or json_output.get("search_query")
         if not query:
             print("No Query key in citation JSON, skipping.")
@@ -983,34 +1014,73 @@ def perform_writeup(
             print(traceback.format_exc())
             plot_descriptions_str = "No descriptions available."
 
+        with open(writeup_file, "r") as f:
+            writeup_text = f.read()
+
+        # ── STAGE A: Compose paper content in markdown (reasoning model) ──
+        compose_system = (
+            "You are an expert AI researcher writing a paper for the ICBINB workshop at ICLR 2025. "
+            "Your task is to write the scientific content of the paper in clear, structured markdown. "
+            "Do NOT write any LaTeX — use plain markdown with sections: "
+            "Introduction, Preprocessing, Methods, Results, Discussion, Future Work. "
+            "Be concise and precise. Include specific numbers and findings from the experiment data."
+        )
+        compose_prompt = (
+            f"Research idea:\n{idea_text}\n\n"
+            f"Experiment summaries:\n{combined_summaries_str}\n\n"
+            f"Figures available: {', '.join(plot_names)}\n"
+            f"Figure descriptions:\n{plot_descriptions_str}\n\n"
+            "Write the full paper content in markdown. Be specific about results and metrics."
+        )
+        compose_model = route_model("compose reasoning paper analysis")
+        reasoning_client, reasoning_model = create_client(compose_model)
+        print(f"Stage A: composing paper content with {compose_model}...")
+        paper_markdown, _ = get_response_from_llm(
+            prompt=compose_prompt,
+            client=reasoning_client,
+            model=reasoning_model,
+            system_message=compose_system,
+            print_debug=False,
+        )
+        print(f"Stage A done. Markdown length: {len(paper_markdown)} chars")
+
+        # ── STAGE B: Format markdown into LaTeX (code/format model) ──
         big_model_system_message = writeup_system_message_template.format(
             page_limit=page_limit
         )
         big_client, big_client_model = create_client(big_model)
-        with open(writeup_file, "r") as f:
-            writeup_text = f.read()
 
-        combined_prompt = writeup_prompt.format(
-            idea_text=idea_text,
-            summaries=combined_summaries_str,
-            aggregator_code=aggregator_code,
-            plot_list=", ".join(plot_names),
-            latex_writeup=writeup_text,
-            plot_descriptions=plot_descriptions_str,
+        format_prompt = (
+            f"Convert the following paper content into a complete LaTeX document using the provided template.\n\n"
+            f"PAPER CONTENT (markdown):\n{paper_markdown}\n\n"
+            f"EXISTING LATEX TEMPLATE:\n{writeup_text}\n\n"
+            f"Figures to include: {', '.join(plot_names)}\n"
+            f"Citations from references.bib are available.\n\n"
+            "Rules:\n"
+            "1. Keep the template structure (\\documentclass, packages, etc.)\n"
+            "2. Fill in the content sections from the markdown\n"
+            "3. Add \\includegraphics for the figures listed above\n"
+            "4. Do NOT change content — only convert markdown to LaTeX syntax\n\n"
+            "Return the complete template.tex wrapped in ```latex ... ```"
         )
 
         response, msg_history = get_response_from_llm(
-            prompt=combined_prompt,
+            prompt=format_prompt,
             client=big_client,
             model=big_client_model,
             system_message=big_model_system_message,
             print_debug=False,
+            max_tokens=2048,
         )
 
-        latex_code_match = re.search(r"```latex(.*?)```", response, re.DOTALL)
-        if not latex_code_match:
+        latex_code_match = re.search(r"```(?:latex)?(.*?)```", response, re.DOTALL)
+        if latex_code_match:
+            updated_latex_code = latex_code_match.group(1).strip()
+        elif r"\documentclass" in response or r"\begin{document}" in response:
+            updated_latex_code = response.strip()
+        else:
+            print("No LaTeX found in writeup response — retrying.")
             return False
-        updated_latex_code = latex_code_match.group(1).strip()
         with open(writeup_file, "w") as f:
             f.write(updated_latex_code)
 

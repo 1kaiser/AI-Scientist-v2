@@ -682,11 +682,19 @@ class MinimalAgent:
     def plan_and_code_query(self, prompt, retries=3) -> tuple[str, str]:
         """Generate a natural language plan + code in the same LLM call and split them apart."""
         completion_text = None
-        for _ in range(retries):
+        base_model = self.cfg.agent.code.model
+        for attempt in range(retries):
+            # Escalate to qwen3.5:27b after 2 failures with the light coder
+            if attempt >= 2 and base_model == "ollama/qwen2.5-coder:7b":
+                effective_model = "ollama/qwen3.5:27b"
+                print(f"[escalation] Switching to {effective_model} after {attempt} failed attempts.")
+            else:
+                effective_model = base_model
+
             completion_text = query(
                 system_message=prompt,
                 user_message=None,
-                model=self.cfg.agent.code.model,
+                model=effective_model,
                 temperature=self.cfg.agent.code.temp,
             )
 
@@ -694,7 +702,6 @@ class MinimalAgent:
             nl_text = extract_text_up_to_code(completion_text)
 
             if code and nl_text:
-                # merge all code blocks into a single string
                 return nl_text, code
 
             print("Plan + code extraction failed, retrying...")
@@ -1256,11 +1263,17 @@ class ParallelAgent:
     def plan_and_code_query(self, prompt, retries=3) -> tuple[str, str]:
         """Generate a natural language plan + code in the same LLM call and split them apart."""
         completion_text = None
-        for _ in range(retries):
+        base_model = self.cfg.agent.code.model
+        for attempt in range(retries):
+            if attempt >= 2 and base_model == "ollama/qwen2.5-coder:7b":
+                effective_model = "ollama/qwen3.5:27b"
+                print(f"[escalation] Switching to {effective_model} after {attempt} failed attempts.")
+            else:
+                effective_model = base_model
             completion_text = query(
                 system_message=prompt,
                 user_message=None,
-                model=self.cfg.agent.code.model,
+                model=effective_model,
                 temperature=self.cfg.agent.code.temp,
             )
 
@@ -1268,7 +1281,6 @@ class ParallelAgent:
             nl_text = extract_text_up_to_code(completion_text)
 
             if code and nl_text:
-                # merge all code blocks into a single string
                 return nl_text, code
             print("Plan + code extraction failed, retrying...")
             prompt["Parsing Feedback"] = (

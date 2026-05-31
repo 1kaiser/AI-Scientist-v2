@@ -174,7 +174,55 @@ def call_local_model(model, messages, temperature=0.7, max_tokens=4096, n=1, sto
 call_ollama_v1 = call_local_model
 
 
-MAX_NUM_TOKENS = 4096
+# ── Model Router ──────────────────────────────────────────────────────────────
+# Keyword fast-path: classify task from hint string without an LLM call.
+_ROUTE_KEYWORDS = {
+    "ollama/gemma4:e4b": [
+        "eval", "feedback", "is_bug", "judge", "check", "review", "score",
+        "stage_completion", "completion_check",
+    ],
+    "ollama/qwen2.5-coder:7b": [
+        "code", "debug", "fix", "implement", "function", "script", "simple",
+        "draft", "improve", "edit",
+    ],
+    "ollama/gemma4:26b": [
+        "compose", "reasoning", "analysis", "paper", "plan", "strategy",
+        "hypothesis", "explain", "understand", "think",
+    ],
+    "ollama/qwen3.5:27b": [
+        "latex", "writeup", "format", "template", "complex", "adversarial",
+        "novel", "ablation", "architecture",
+    ],
+}
+
+def route_model(task_hint: str, prompt: str = "") -> str:
+    """Return the best model for a task using keyword matching first, then gemma4:26b."""
+    hint_lower = task_hint.lower()
+    for model, keywords in _ROUTE_KEYWORDS.items():
+        if any(k in hint_lower for k in keywords):
+            return model
+
+    # Fallback: ask gemma4:26b to classify (max 10 tokens, temperature 0)
+    classification_prompt = (
+        f"Task: {task_hint}\nPrompt (first 200 chars): {prompt[:200]}\n\n"
+        "Reply with EXACTLY one of these model names (nothing else):\n"
+        "ollama/gemma4:e4b\nollama/qwen2.5-coder:7b\nollama/gemma4:26b\nollama/qwen3.5:27b"
+    )
+    try:
+        resp = call_local_model(
+            "gemma4:26b",
+            [{"role": "user", "content": classification_prompt}],
+            temperature=0.0, max_tokens=20,
+        )
+        choice = strip_thinking_tags(resp.choices[0].message.content or "").strip()
+        if choice in _ROUTE_KEYWORDS:
+            return choice
+    except Exception:
+        pass
+    return "ollama/qwen2.5-coder:7b"  # safe default
+
+
+MAX_NUM_TOKENS = 8192
 
 AVAILABLE_LLMS = [
     "claude-3-5-sonnet-20240620",
@@ -370,7 +418,7 @@ def get_batch_responses_from_llm(
 
 
 @track_token_usage
-def make_llm_call(client, model, temperature, system_message, prompt):
+def make_llm_call(client, model, temperature, system_message, prompt, max_tokens=None):
     if "gpt" in model or _is_local_client(client):
         return client.chat.completions.create(
             model=model,
@@ -379,7 +427,7 @@ def make_llm_call(client, model, temperature, system_message, prompt):
                 *prompt,
             ],
             temperature=temperature,
-            max_tokens=MAX_NUM_TOKENS,
+            max_tokens=max_tokens or MAX_NUM_TOKENS,
             n=1,
             stop=None,
             seed=0,
@@ -417,6 +465,7 @@ def get_response_from_llm(
     print_debug=False,
     msg_history=None,
     temperature=0.7,
+    max_tokens=None,
 ) -> tuple[str, list[dict[str, Any]]]:
     msg = prompt
     if msg_history is None:
@@ -462,6 +511,7 @@ def get_response_from_llm(
             temperature,
             system_message=system_message,
             prompt=new_msg_history,
+            max_tokens=max_tokens,
         )
         content = strip_thinking_tags(response.choices[0].message.content or "")
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
