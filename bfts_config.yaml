@@ -23,7 +23,7 @@ exec:
 generate_report: True
 # LLM settings for final report from journal
 report:
-  model: "ollama/gemma4:26b"
+  model: "ollama/gemma4:e4b"
   temp: 1.0
 
 experiment:
@@ -37,10 +37,10 @@ agent:
   type: parallel
   num_workers: 1  # single GPU 24GB can only run one 27B model at a time; >1 just queues
   stages:
-    stage1_max_iters: 20
-    stage2_max_iters: 12
-    stage3_max_iters: 12
-    stage4_max_iters: 18
+    stage1_max_iters: 8
+    stage2_max_iters: 3
+    stage3_max_iters: 3
+    stage4_max_iters: 3
   # how many improvement iterations to run
   steps: 5 # if stage-specific max_iters are not provided, the agent will use this value for all stages
   # whether to instruct the agent to use CV (set to 1 to disable)
@@ -60,7 +60,7 @@ agent:
 
   # LLM settings for evaluating program output / tracebacks
   feedback:
-    model: "ollama/qwen3.5:27b"
+    model: "ollama/gemma4:e4b"
     temp: 0.5
     max_tokens: 4096
 

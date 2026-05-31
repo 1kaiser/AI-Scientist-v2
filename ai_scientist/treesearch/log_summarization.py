@@ -147,9 +147,13 @@ def get_summarizer_prompt(journal, stage_name):
 
 
 def get_stage_summary(journal, stage_name, model, client):
+    if not journal.good_nodes:
+        return {"summary": "No good nodes found in this stage.", "stage": stage_name}
     sys_msg, prompt = get_summarizer_prompt(journal, stage_name)
     response = get_response_from_llm(prompt, client, model, sys_msg)
     summary_json = extract_json_between_markers(response[0])
+    if summary_json is None:
+        summary_json = {"summary": response[0] or "No summary available.", "stage": stage_name}
     return summary_json
 
 
@@ -356,7 +360,10 @@ def overall_summarize(journals, cfg=None):
                 total=len(list(journals)),
             )
         )
-        draft_summary, baseline_summary, research_summary, ablation_summary = results
+        # pad to 4 in case fewer stages ran (e.g. early exit with no good nodes)
+        while len(results) < 4:
+            results.append(None)
+        draft_summary, baseline_summary, research_summary, ablation_summary = results[:4]
 
     return draft_summary, baseline_summary, research_summary, ablation_summary
 

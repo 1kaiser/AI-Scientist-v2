@@ -445,8 +445,13 @@ This JSON will be automatically parsed, so ensure the format is precise."""
             return None, True
 
         json_output = extract_json_between_markers(text)
-        assert json_output is not None, "Failed to extract JSON from LLM output"
-        query = json_output["Query"]
+        if json_output is None:
+            print("No JSON found in citation response, skipping.")
+            return None, False
+        query = json_output.get("Query") or json_output.get("query") or json_output.get("search_query")
+        if not query:
+            print("No Query key in citation JSON, skipping.")
+            return None, False
         papers = search_for_papers(query, result_limit=5)
     except Exception:
         print("EXCEPTION in get_citation_addition (initial search):")

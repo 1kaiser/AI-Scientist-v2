@@ -33,6 +33,10 @@ AVAILABLE_VLMS = [
 
     # User's local VLM
     "ollama/llava:7b",
+    "ollama/gemma4:e4b",
+    "ollama/gemma4:26b",
+    "ollama/qwen3.5:27b",
+    "ollama/qwen3.5:4b",
 ]
 
 

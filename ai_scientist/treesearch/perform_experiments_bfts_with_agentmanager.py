@@ -73,7 +73,8 @@ class PipelineMonitor:
 
         best = journal.get_best_node(cfg=self.cfg)
         if best and hasattr(best, "metric") and hasattr(best.metric, "value"):
-            self.best_metric_str = f"{best.metric.value:.4f}"
+            v = best.metric.value
+            self.best_metric_str = f"{v:.4f}" if isinstance(v, (int, float)) else str(v)
         elif best:
             self.best_metric_str = str(best.metric)
 

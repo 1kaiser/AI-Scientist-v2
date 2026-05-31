@@ -86,20 +86,54 @@ def query(
     if func_spec is None:
         output = choice.message.content
     else:
-        assert (
-            choice.message.tool_calls
-        ), f"function_call is empty, it is not a function call: {choice.message}"
-        assert (
-            choice.message.tool_calls[0].function.name == func_spec.name
-        ), "Function name mismatch"
-        try:
-            print(f"[cyan]Raw func call response: {choice}[/cyan]")
-            output = json.loads(choice.message.tool_calls[0].function.arguments)
-        except json.JSONDecodeError as e:
-            logger.error(
-                f"Error decoding the function arguments: {choice.message.tool_calls[0].function.arguments}"
-            )
-            raise e
+        if choice.message.tool_calls:
+            assert (
+                choice.message.tool_calls[0].function.name == func_spec.name
+            ), "Function name mismatch"
+            try:
+                print(f"[cyan]Raw func call response: {choice}[/cyan]")
+                output = json.loads(choice.message.tool_calls[0].function.arguments)
+            except json.JSONDecodeError as e:
+                logger.error(
+                    f"Error decoding the function arguments: {choice.message.tool_calls[0].function.arguments}"
+                )
+                raise e
+        else:
+            # Local models (e.g. gemma4 via Ollama) return JSON as content text
+            # instead of tool_calls — try multiple extraction strategies
+            content = choice.message.content or ""
+            import re
+            output = None
+            # Strategy 1: JSON fenced block
+            match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
+            if match:
+                raw = match.group(1)
+                raw = re.sub(r'\\(?![\\/"bfnrtu]|u[0-9a-fA-F]{4})', r'\\\\', raw)
+                try:
+                    output = json.loads(raw)
+                except json.JSONDecodeError:
+                    pass
+            # Strategy 2: bare JSON object anywhere in content
+            if output is None:
+                match2 = re.search(r'\{[^{}]*"is_bug[^{}]*\}', content, re.DOTALL)
+                if match2:
+                    raw2 = re.sub(r'\\(?![\\/"bfnrtu]|u[0-9a-fA-F]{4})', r'\\\\', match2.group())
+                    try:
+                        output = json.loads(raw2)
+                    except json.JSONDecodeError:
+                        pass
+            # Strategy 3: infer from plain-text content (gemma4:e4b narrative responses)
+            if output is None and content:
+                no_bug_phrases = ["no critical bug", "no bug", "execution was successful",
+                                  "no errors", "completed successfully", "runs correctly"]
+                is_bug = not any(p in content.lower() for p in no_bug_phrases)
+                summary = content[:300].replace('\n', ' ').strip()
+                output = {"is_bug": is_bug, "summary": summary}
+                logger.warning(f"Inferred is_bug={is_bug} from plain-text response")
+            if output is None:
+                raise AssertionError(
+                    f"function_call is empty and content is not valid JSON: {choice.message}"
+                )
 
     in_tokens = completion.usage.prompt_tokens
     out_tokens = completion.usage.completion_tokens

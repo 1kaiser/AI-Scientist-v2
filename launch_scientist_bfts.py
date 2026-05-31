@@ -85,19 +85,19 @@ def parse_arguments():
     parser.add_argument(
         "--model_agg_plots",
         type=str,
-        default="o3-mini-2025-01-31",
+        default="ollama/gemma4:e4b",
         help="Model to use for plot aggregation",
     )
     parser.add_argument(
         "--model_writeup",
         type=str,
-        default="o1-preview-2024-09-12",
+        default="ollama/qwen3.5:27b",
         help="Model to use for writeup",
     )
     parser.add_argument(
         "--model_citation",
         type=str,
-        default="gpt-4o-2024-11-20",
+        default="ollama/gemma4:e4b",
         help="Model to use for citation gathering",
     )
     parser.add_argument(
@@ -109,13 +109,13 @@ def parse_arguments():
     parser.add_argument(
         "--model_writeup_small",
         type=str,
-        default="gpt-4o-2024-05-13",
+        default="ollama/gemma4:e4b",
         help="Smaller model to use for writeup",
     )
     parser.add_argument(
         "--model_review",
         type=str,
-        default="gpt-4o-2024-11-20",
+        default="ollama/gemma4:e4b",
         help="Model to use for review main text and captions",
     )
     parser.add_argument(
@@ -140,27 +140,25 @@ def get_available_gpus(gpu_ids=None):
 def find_pdf_path_for_review(idea_dir):
     pdf_files = [f for f in os.listdir(idea_dir) if f.endswith(".pdf")]
     reflection_pdfs = [f for f in pdf_files if "reflection" in f]
+    pdf_path = None
     if reflection_pdfs:
         # First check if there's a final version
         final_pdfs = [f for f in reflection_pdfs if "final" in f.lower()]
         if final_pdfs:
-            # Use the final version if available
             pdf_path = osp.join(idea_dir, final_pdfs[0])
         else:
-            # Try to find numbered reflections
             reflection_nums = []
             for f in reflection_pdfs:
                 match = re.search(r"reflection[_.]?(\d+)", f)
                 if match:
                     reflection_nums.append((int(match.group(1)), f))
-
             if reflection_nums:
-                # Get the file with the highest reflection number
                 highest_reflection = max(reflection_nums, key=lambda x: x[0])
                 pdf_path = osp.join(idea_dir, highest_reflection[1])
             else:
-                # Fall back to the first reflection PDF if no numbers found
                 pdf_path = osp.join(idea_dir, reflection_pdfs[0])
+    elif pdf_files:
+        pdf_path = osp.join(idea_dir, pdf_files[0])
     return pdf_path
 
 

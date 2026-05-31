@@ -311,6 +311,30 @@ class MinimalAgent:
             "CRITICAL MODEL INPUT GUIDELINES:",
             "  - Always pay extra attention to the input to the model being properly normalized",
             "  - This is extremely important because the input to the model's forward pass directly affects the output, and the loss function is computed based on the output",
+            "CRITICAL ADVERSARIAL ATTACK / GRADIENT ATTACK GUIDELINES:",
+            "  - When implementing adversarial perturbations (FGSM, PGD, etc.), ALWAYS use:",
+            "    ```python",
+            "    x_adv = x.clone().detach().requires_grad_(True).to(device)",
+            "    loss = criterion(model(x_adv), y)",
+            "    loss.backward()",
+            "    grad = x_adv.grad.data",
+            "    ```",
+            "  - NEVER call .backward() on a tensor that was not created with requires_grad=True",
+            "  - NEVER forget .detach() before .requires_grad_(True) to avoid in-place errors",
+            "  - NEVER wrap adversarial attack code inside torch.no_grad() — no_grad() disables gradient tracking and will cause .backward() to fail",
+            "  - torch.no_grad() is ONLY for inference/evaluation — adversarial attacks MUST run outside it",
+            "  - NEVER access .grad before calling .backward() — .grad is None until backward() has been called",
+            "  - After loss.backward(), always check: assert x_adv.grad is not None before calling x_adv.grad.data",
+            "  - NEVER use .retain_grad() as a workaround — fix the graph construction instead",
+            "CRITICAL ACCURACY / LABEL GUIDELINES:",
+            "  - If test accuracy is 0.0000 after training, check: are labels integers (not one-hot)? Is loss function correct for the task?",
+            "  - For classification: use CrossEntropyLoss with integer class labels (NOT one-hot), output shape [batch, num_classes]",
+            "  - For regression: use MSELoss, output shape [batch, 1] or [batch]",
+            "  - ALWAYS print sample predictions vs labels in the first epoch to verify label format is correct",
+            "CRITICAL PLOTTING / NUMPY GUIDELINES:",
+            "  - NEVER pass CUDA tensors directly to matplotlib or numpy — always call .cpu().detach().numpy() first",
+            "  - Example: plt.plot(loss_tensor.cpu().detach().numpy()) NOT plt.plot(loss_tensor)",
+            "  - For any tensor used outside PyTorch (printing, plotting, saving): tensor.cpu().detach().numpy()",
         ]
         if hasattr(self.cfg.experiment, "num_syn_datasets"):
             num_syn_datasets = self.cfg.experiment.num_syn_datasets
@@ -709,8 +733,8 @@ class MinimalAgent:
             ),
         )
 
-        node.analysis = response["summary"]
-        node.is_buggy = response["is_bug"] or node.exc_type is not None
+        node.analysis = response.get("summary") or response.get("Summary") or str(response)
+        node.is_buggy = response.get("is_bug", response.get("is_bug", False)) or node.exc_type is not None
         print(
             "[red]Checking if response contains metric name and description[/red]",
             flush=True,
@@ -894,6 +918,7 @@ class MinimalAgent:
     def _analyze_plots_with_vlm(self, node: Node) -> None:
         """Analyze experimental plots using VLM"""
         if not node.plot_paths:
+            node.is_buggy_plots = False  # no plots to evaluate → not a plot bug
             return
 
         # for debugging
@@ -1786,6 +1811,9 @@ class ParallelAgent:
                         logger.error(
                             f"Error analyzing plots for node {child_node.id}: {str(e)}"
                         )
+                # Ensure is_buggy_plots is always a bool after this block
+                if child_node.is_buggy_plots is None:
+                    child_node.is_buggy_plots = False
 
             # Convert result node to dict
             print("Converting result to dict")
