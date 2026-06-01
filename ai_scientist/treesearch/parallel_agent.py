@@ -297,6 +297,21 @@ class MinimalAgent:
     @property
     def _prompt_impl_guideline(self):
         impl_guideline = [
+            "CRITICAL SIMPLICITY FOR PRELIMINARY STAGE:",
+            "  - For Stage 1 (preliminary), implement the SIMPLEST possible working solution",
+            "  - Use synthetic/generated data if real datasets are unavailable — do NOT fail on missing data",
+            "  - For image tasks: use a simple CNN, NOT YOLOv8/Faster-RCNN/complex detectors",
+            "  - For pest/object detection: just classify images, do NOT implement bounding box detection",
+            "  - Prefer torchvision.datasets or synthetic numpy arrays over external dataset APIs",
+            "CRITICAL IMPORTS - Your code MUST start with these imports:",
+            "  ```python",
+            "  import os, sys, json, time, math",
+            "  import numpy as np",
+            "  import torch",
+            "  import torch.nn as nn",
+            "  import matplotlib.pyplot as plt",
+            "  ```",
+            "  NEVER use os, np, torch, plt, or json without importing them first.",
             "CRITICAL GPU REQUIREMENTS - Your code MUST include ALL of these:",
             "  - At the start of your code, add these lines to handle GPU/CPU:",
             "    ```python",

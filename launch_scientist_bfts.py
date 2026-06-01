@@ -302,7 +302,7 @@ if __name__ == "__main__":
     if not args.skip_review and not args.skip_writeup:
         # Perform paper review if the paper exists
         pdf_path = find_pdf_path_for_review(idea_dir)
-        if os.path.exists(pdf_path):
+        if pdf_path and os.path.exists(pdf_path):
             print("Paper found at: ", pdf_path)
             paper_content = load_paper(pdf_path)
             client, client_model = create_client(args.model_review)

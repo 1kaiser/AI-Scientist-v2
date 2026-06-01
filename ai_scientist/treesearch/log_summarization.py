@@ -284,9 +284,11 @@ def annotate_history(journal, cfg=None):
                         model,
                         report_summarizer_sys_msg,
                     )
-                    node.overall_plan = extract_json_between_markers(response[0])[
-                        "overall_plan"
-                    ]
+                    parsed = extract_json_between_markers(response[0])
+                    if parsed and "overall_plan" in parsed:
+                        node.overall_plan = parsed["overall_plan"]
+                    else:
+                        node.overall_plan = response[0] or node.plan
                     break
                 except Exception as e:
                     retry_count += 1

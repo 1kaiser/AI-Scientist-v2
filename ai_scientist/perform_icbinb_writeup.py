@@ -756,6 +756,9 @@ def filter_experiment_summaries(exp_summaries, step_name):
 
     filtered_summaries = {}
     for stage_name in exp_summaries.keys():
+        if exp_summaries[stage_name] is None:
+            filtered_summaries[stage_name] = {}
+            continue
         if stage_name in {"BASELINE_SUMMARY", "RESEARCH_SUMMARY"}:
             filtered_summaries[stage_name] = {}
             for key in exp_summaries[stage_name].keys():
@@ -1061,7 +1064,7 @@ def perform_writeup(
             "2. Fill in the content sections from the markdown\n"
             "3. Add \\includegraphics for the figures listed above\n"
             "4. Do NOT change content — only convert markdown to LaTeX syntax\n\n"
-            "Return the complete template.tex wrapped in ```latex ... ```"
+            "IMPORTANT: Start your response with:\n```latex\n\\documentclass"
         )
 
         response, msg_history = get_response_from_llm(
@@ -1070,14 +1073,18 @@ def perform_writeup(
             model=big_client_model,
             system_message=big_model_system_message,
             print_debug=False,
-            max_tokens=2048,
-        )
+        )  # uses MAX_NUM_TOKENS=8192 — needed for thinking + LaTeX generation
 
-        latex_code_match = re.search(r"```(?:latex)?(.*?)```", response, re.DOTALL)
+        latex_code_match = re.search(r"```(?:latex)?\s*(.*?)```", response, re.DOTALL)
         if latex_code_match:
             updated_latex_code = latex_code_match.group(1).strip()
         elif r"\documentclass" in response or r"\begin{document}" in response:
-            updated_latex_code = response.strip()
+            # Strip any leading ``` fence prefix before \documentclass
+            raw = response.strip()
+            dc_pos = raw.find(r"\documentclass")
+            bd_pos = raw.find(r"\begin{document}")
+            start = min(p for p in [dc_pos, bd_pos] if p >= 0)
+            updated_latex_code = raw[start:]
         else:
             print("No LaTeX found in writeup response — retrying.")
             return False
