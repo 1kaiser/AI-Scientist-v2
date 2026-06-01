@@ -24,7 +24,7 @@ generate_report: True
 # LLM settings for final report from journal
 report:
   model: "ollama/gemma4:e4b"
-  temp: 1.0
+  temp: 0.7        # paper writing → top_p=0.90, top_k=40, repeat_penalty=1.10
 
 experiment:
   num_syn_datasets: 1
@@ -55,18 +55,18 @@ agent:
   # LLM settings for coding
   code:
     model: "ollama/qwen3.5:27b"
-    temp: 0.7
+    temp: 0.2        # deterministic → top_p=0.75, top_k=15, repeat_penalty=1.02
     max_tokens: 8192
 
   # LLM settings for evaluating program output / tracebacks
   feedback:
     model: "ollama/gemma4:e4b"
-    temp: 0.5
+    temp: 0.3        # eval/judge → top_p=0.80, top_k=20, repeat_penalty=1.05
     max_tokens: 4096
 
   vlm_feedback:
-    model: "ollama/llava:7b"
-    temp: 0.5
+    model: "ollama/qwen2.5vl:7b"   # upgraded from llava:7b
+    temp: 0.3
     max_tokens: null
 
   search:

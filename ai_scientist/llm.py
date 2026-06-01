@@ -115,6 +115,25 @@ def _make_local_client() -> openai.OpenAI:
     return openai.OpenAI(base_url=LLAMA_BASE_URL, api_key="local")
 
 
+def _ollama_options(model: str, temperature: float) -> dict:
+    """Return per-task-type Ollama sampling options based on model + temperature."""
+    clean = model.replace("ollama/", "")
+    # Code/LaTeX tasks: low temp → deterministic params
+    if temperature <= 0.35:
+        top_p, top_k, repeat_penalty = 0.75, 15, 1.02
+    # Reasoning/paper writing: medium-high temp → creative params
+    elif temperature >= 0.65:
+        top_p, top_k, repeat_penalty = 0.90, 40, 1.10
+    else:
+        top_p, top_k, repeat_penalty = 0.80, 20, 1.05
+    return {
+        "num_ctx": 8192,          # reduced from 16384 — saves KV cache VRAM
+        "top_p": top_p,
+        "top_k": top_k,
+        "repeat_penalty": repeat_penalty,
+    }
+
+
 def call_local_model(model, messages, temperature=0.7, max_tokens=4096, n=1, stop=None, tools=None, tool_choice=None):
     """Call any local OpenAI-compatible backend (Ollama /v1, llama.cpp server, vLLM, SGLang).
 
@@ -137,9 +156,11 @@ def call_local_model(model, messages, temperature=0.7, max_tokens=4096, n=1, sto
             n=n,
             stop=stop,
             timeout=600,
-            # Ollama-specific extras passed through extra_body (ignored by other backends)
-            extra_body={"keep_alive": 300, "think": False,
-                        "options": {"num_ctx": 16384}},
+            extra_body={
+                "keep_alive": 300,
+                "think": False,
+                "options": _ollama_options(model, temperature),
+            },
         )
         if tools is not None:
             kwargs["tools"] = tools
