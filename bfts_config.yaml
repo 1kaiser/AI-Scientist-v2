@@ -23,7 +23,7 @@ exec:
 generate_report: True
 # LLM settings for final report from journal
 report:
-  model: "ollama/gemma4:e4b"
+  model: "ollama/gemma4:26b-a4b-it-q4_K_M"
   temp: 0.7        # paper writing → top_p=0.90, top_k=40, repeat_penalty=1.10
 
 experiment:

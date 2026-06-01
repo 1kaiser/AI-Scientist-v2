@@ -206,7 +206,7 @@ _ROUTE_KEYWORDS = {
         "code", "debug", "fix", "implement", "function", "script", "simple",
         "draft", "improve", "edit",
     ],
-    "ollama/gemma4:26b": [
+    "ollama/gemma4:26b-a4b-it-q4_K_M": [
         "compose", "reasoning", "analysis", "paper", "plan", "strategy",
         "hypothesis", "explain", "understand", "think",
     ],
