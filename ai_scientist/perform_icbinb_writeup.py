@@ -1020,32 +1020,80 @@ def perform_writeup(
         with open(writeup_file, "r") as f:
             writeup_text = f.read()
 
-        # ── STAGE A: Compose paper content in markdown (reasoning model) ──
-        compose_system = (
-            "You are an expert AI researcher writing a paper for the ICBINB workshop at ICLR 2025. "
-            "Your task is to write the scientific content of the paper in clear, structured markdown. "
-            "Do NOT write any LaTeX — use plain markdown with sections: "
-            "Introduction, Preprocessing, Methods, Results, Discussion, Future Work. "
-            "Be concise and precise. Include specific numbers and findings from the experiment data."
-        )
-        compose_prompt = (
-            f"Research idea:\n{idea_text}\n\n"
-            f"Experiment summaries:\n{combined_summaries_str}\n\n"
-            f"Figures available: {', '.join(plot_names)}\n"
-            f"Figure descriptions:\n{plot_descriptions_str}\n\n"
-            "Write the full paper content in markdown. Be specific about results and metrics."
-        )
+        # ── STAGE A: Graph-ordered composition (research_engine_v17 pattern) ──
+        # Sections written in dependency order: Methods→Results→Discussion→
+        # Conclusion→Introduction→Abstract  (intro written LAST from results)
         compose_model = route_model("compose reasoning paper analysis")
         reasoning_client, reasoning_model = create_client(compose_model)
-        print(f"Stage A: composing paper content with {compose_model}...")
-        paper_markdown, _ = get_response_from_llm(
-            prompt=compose_prompt,
-            client=reasoning_client,
-            model=reasoning_model,
-            system_message=compose_system,
-            print_debug=False,
+        print(f"Stage A: graph-ordered composition with {compose_model}...")
+
+        BASE_CONTEXT = (
+            f"Research idea:\n{idea_text}\n\n"
+            f"Experiment summaries:\n{combined_summaries_str}\n\n"
+            f"Figures: {', '.join(plot_names)}\n"
+            f"Figure descriptions:\n{plot_descriptions_str}\n"
         )
-        print(f"Stage A done. Markdown length: {len(paper_markdown)} chars")
+        COMPOSE_SYS = (
+            "You are an expert AI researcher. Write one paper section in precise markdown. "
+            "Use ONLY data from the provided experiment summaries. "
+            "Include specific numbers, metrics, and findings. No invented facts. "
+            "Do NOT write LaTeX — plain markdown only."
+        )
+
+        def compose_section(section_name, instructions, storyline_so_far):
+            recent = "\n\n".join(storyline_so_far[-2:]) if storyline_so_far else ""
+            prompt = (
+                f"{BASE_CONTEXT}\n"
+                f"SECTIONS WRITTEN SO FAR:\n{recent}\n\n"
+                f"Now write ONLY the '{section_name}' section.\n"
+                f"{instructions}\n"
+                f"Start with '## {section_name}'"
+            )
+            text, _ = get_response_from_llm(
+                prompt=prompt,
+                client=reasoning_client,
+                model=reasoning_model,
+                system_message=COMPOSE_SYS,
+                print_debug=False,
+                max_tokens=1024,
+            )
+            print(f"  {section_name}: {len(text)} chars")
+            return text
+
+        storyline = []
+        storyline.append(compose_section(
+            "Preprocessing & Methods",
+            "Describe the data pipeline, model architecture, training procedure, hyperparameters.",
+            storyline,
+        ))
+        storyline.append(compose_section(
+            "Results",
+            "Report all metrics with exact numbers. Reference figures by name. Compare conditions.",
+            storyline,
+        ))
+        storyline.append(compose_section(
+            "Discussion",
+            "Interpret results. Explain why they support or contradict the hypothesis. Discuss limitations.",
+            storyline,
+        ))
+        storyline.append(compose_section(
+            "Conclusion & Future Work",
+            "Summarize key findings in 3-5 sentences. List 2-3 concrete future directions.",
+            storyline,
+        ))
+        storyline.append(compose_section(
+            "Introduction",
+            "Motivate the problem. State the hypothesis. Summarize contributions and findings (written LAST so it references results).",
+            storyline,
+        ))
+        storyline.append(compose_section(
+            "Abstract",
+            "One paragraph (150 words max): problem, method, key result with number, conclusion.",
+            storyline,
+        ))
+
+        paper_markdown = "\n\n".join(storyline)
+        print(f"Stage A done. Total markdown: {len(paper_markdown)} chars ({len(storyline)} sections)")
 
         # ── STAGE B: Format markdown into LaTeX (code/format model) ──
         big_model_system_message = writeup_system_message_template.format(
