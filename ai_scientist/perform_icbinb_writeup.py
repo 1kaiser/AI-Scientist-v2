@@ -1040,9 +1040,10 @@ def perform_writeup(
             with open(writeup_file, "w") as f:
                 f.write(content)
 
-        # Generate VLM-based descriptions
+        # Generate VLM-based descriptions — use a vision-capable model, not the text feedback model
+        _vlm_review_model = os.environ.get("VLM_REVIEW_MODEL", "ollama/qwen2.5vl:7b")
         try:
-            vlm_client, vlm_model = create_vlm_client(small_model)
+            vlm_client, vlm_model = create_vlm_client(_vlm_review_model)
             desc_map = {}
             for pf in plot_names:
                 ppath = osp.join(figures_dir, pf)
@@ -1093,7 +1094,7 @@ def perform_writeup(
             "Do NOT write LaTeX — plain markdown only."
         )
 
-        def compose_section(section_name, instructions, storyline_so_far):
+        def compose_section(section_name, instructions, storyline_so_far, max_retries=3):
             recent = "\n\n".join(storyline_so_far[-2:]) if storyline_so_far else ""
             prompt = (
                 f"{BASE_CONTEXT}\n"
@@ -1102,16 +1103,21 @@ def perform_writeup(
                 f"{instructions}\n"
                 f"Start with '## {section_name}'"
             )
-            text, _ = get_response_from_llm(
-                prompt=prompt,
-                client=reasoning_client,
-                model=reasoning_model,
-                system_message=COMPOSE_SYS,
-                print_debug=False,
-                max_tokens=1024,
-            )
-            print(f"  {section_name}: {len(text)} chars")
-            return text
+            for attempt in range(max_retries):
+                text, _ = get_response_from_llm(
+                    prompt=prompt,
+                    client=reasoning_client,
+                    model=reasoning_model,
+                    system_message=COMPOSE_SYS,
+                    print_debug=False,
+                    max_tokens=1024,
+                )
+                if text and len(text.strip()) > 50:
+                    print(f"  {section_name}: {len(text)} chars")
+                    return text
+                print(f"  {section_name}: empty response (attempt {attempt+1}/{max_retries}), retrying...")
+            print(f"  {section_name}: all retries empty — using placeholder")
+            return f"## {section_name}\n\nResults from the experiments are described in the experiment summaries."
 
         storyline = []
         storyline.append(compose_section(
