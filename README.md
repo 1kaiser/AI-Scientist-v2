@@ -38,27 +38,113 @@ This system autonomously generates hypotheses, runs experiments, analyzes data, 
 
 ## Requirements
 
-This code is designed to run on Linux with NVIDIA GPUs using CUDA and PyTorch.
+Runs on Linux. GPU (NVIDIA CUDA) strongly recommended for the experiment stages; CPU-only mode works for writeup and embedding steps.
 
 ### Installation
 
+#### Step 1 — Conda environment
+
 ```bash
-# Create a new conda environment
+# Create environment (Python 3.11 required)
 conda create -n ai_scientist python=3.11
 conda activate ai_scientist
-
-# Install PyTorch with CUDA support (adjust pytorch-cuda version for your setup)
-conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
-
-# Install PDF and LaTeX tools
-conda install anaconda::poppler
-conda install conda-forge::chktex
-
-# Install Python package requirements
-pip install -r requirements.txt
 ```
 
-Installation usually takes no more than one hour.
+#### Step 2 — PyTorch
+
+**GPU (NVIDIA CUDA 12.x — recommended):**
+```bash
+conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
+```
+
+**CPU-only (no GPU / testing on laptop):**
+```bash
+conda install pytorch torchvision torchaudio cpuonly -c pytorch
+```
+
+> Set `JAX_PLATFORMS=cpu` if using JAX-based components without GPU.
+
+#### Step 3 — System tools
+
+```bash
+# PDF rendering + LaTeX linting
+conda install anaconda::poppler conda-forge::chktex
+
+# tectonic: standalone TeX engine (no admin rights needed, replaces pdflatex)
+conda install conda-forge::tectonic
+```
+
+#### Step 4 — Python packages (via uv — 10× faster than pip)
+
+```bash
+# Install uv first
+pip install uv
+
+# Install all requirements
+uv pip install -r requirements.txt
+```
+
+> `uv` resolves and installs packages in parallel. On a cold cache this takes ~2 min vs ~20 min with pip.
+
+#### Step 5 — Ollama (local LLM server)
+
+```bash
+# Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Pull required models
+ollama pull gemma4:26b-a4b-it-q4_K_M   # compose / report  (MoE, 96 tok/s)
+ollama pull qwen3.5:27b                  # code + LaTeX formatting
+ollama pull gemma4:e4b                   # feedback / eval
+ollama pull qwen2.5vl:7b                 # VLM plot review
+
+# Pull embedding models (for LaTeX RAG + Figure RAG)
+ollama pull qwen3-embedding:0.6b         # default embed model
+ollama pull embeddinggemma:latest        # benchmark comparison
+
+# Start Ollama with GPU optimisations (Blackwell/Ampere)
+OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 ollama serve
+```
+
+**CPU-only Ollama** (no GPU):
+```bash
+# Same pull commands above work on CPU — just slower inference
+OLLAMA_NUM_GPU=0 ollama serve
+```
+
+#### Step 6 — HuggingFace VL Embedding (optional, for pixel-level Figure RAG)
+
+```bash
+# Downloads ~5 GB on first use — GPU strongly recommended
+# Model auto-downloads from HuggingFace on first get_embedder() call
+# No manual step needed; accelerate must be installed (included in requirements.txt)
+
+# To pre-download explicitly:
+python -c "from ai_scientist.hf_embed import get_embedder; get_embedder()"
+
+# CPU-only (slower, ~4 min per image batch):
+FIGURE_RAG_BACKEND=hf python -c "
+from ai_scientist.hf_embed import get_embedder
+emb = get_embedder(device='cpu')
+print(emb.embed_texts(['test'])[:, :4])
+"
+```
+
+#### Step 7 — LaTeX RAG index (one-time, ~10 min)
+
+```bash
+# Download the LaTeX reference
+wget -O data/latex2e.txt \
+  https://mirrors.in3.sahilister.net/ctan/info/latex2e-help-texinfo/latex2e.txt
+
+# Build index (requires Ollama running)
+python -c "
+from ai_scientist.latex_rag import build_index_for_model
+build_index_for_model('qwen3-embedding:0.6b')
+"
+```
+
+Installation takes **15–30 minutes** (mostly model downloads).
 
 ### Supported Models and API Keys
 

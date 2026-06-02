@@ -1,32 +1,34 @@
-# LLM APIs
+accelerate
 anthropic
 backoff
-openai
-# Viz
-matplotlib
-pypdf
-pymupdf4llm
-seaborn
-# Common Requirements
-numpy
-transformers
-datasets
-tiktoken
-wandb
-tqdm
-rich
-humanize
-dataclasses-json
-funcy
 black
-genson
-shutup
-python-igraph
-coolname
-jsonschema
-omegaconf
-botocore
 boto3
+botocore
+# Common Requirements
+coolname
+dataclasses-json
+datasets
+funcy
+genson
+humanize
+jsonschema
 lightrag-hku
-accelerate
+# LLM APIs
+matplotlib
+numpy
+omegaconf
+openai
 Pillow
+pymupdf4llm
+pypdf
+python-igraph
+rich
+seaborn
+shutup
+tiktoken
+tqdm
+transformers
+# Viz
+wandb
+uv
+langextract
