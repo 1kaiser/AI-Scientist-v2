@@ -101,6 +101,11 @@ def _sanitize_latex(cwd):
         out.append(line)
     src = "".join(out)
 
+    # 4. Strip any unresolved [[tags]] — tectonic treats [ as math mode operator
+    if re.search(r"\[\[[^\]]*\]\]", src):
+        src = re.sub(r"\[\[[^\]]*\]\]", "", src)
+        print("_sanitize_latex: stripped residual [[tags]]")
+
     if src != original:
         with open(tex_path, "w") as f:
             f.write(src)
@@ -970,6 +975,17 @@ def perform_writeup(
         if old_pdf.endswith(".pdf") and "reflection" in old_pdf:
             os.remove(osp.join(base_folder, old_pdf))
 
+    # Load citation registry if the citation pipeline has been run for this experiment
+    _citation_index_dir = osp.join(base_folder, "citation_index")
+    _doc_registry: dict = {}
+    try:
+        from ai_scientist.citation_pipeline.citation_resolver import load_registry
+        _doc_registry = load_registry(_citation_index_dir)
+        if _doc_registry:
+            print(f"[writeup] Citation registry loaded: {len(_doc_registry)} docs")
+    except Exception as _e:
+        pass  # citation pipeline not run — graceful degradation
+
     try:
         idea_text = load_idea_text(base_folder)
         exp_summaries = load_exp_summaries(base_folder)
@@ -1081,11 +1097,30 @@ def perform_writeup(
         reasoning_client, reasoning_model = create_client(compose_model)
         print(f"Stage A: graph-ordered composition with {compose_model}...")
 
+        # Citation hints for Stage A (only when registry is available)
+        _cite_hint = ""
+        if _doc_registry:
+            try:
+                from ai_scientist.citation_pipeline.langextract_processor import query_citations
+                _relevant_ids = query_citations(_citation_index_dir, idea_text[:300], top_k_docs=8)
+                _id_list = ", ".join(_relevant_ids) if _relevant_ids else ", ".join(list(_doc_registry.keys())[:8])
+                _cite_hint = (
+                    f"\nCITATION INSTRUCTIONS: When referencing prior work use [[doc_id]] tags.\n"
+                    f"Available doc_ids: {_id_list}\n"
+                    f"For figures/tables/equations use: [[fig:label]], [[tab:label]], [[eq:label]]\n"
+                    f"For supplementary: [[sfig:label]], [[stab:label]], [[app:label]]\n"
+                    f"Example: 'Domain shift reduces mAP by 40% [[ref_03]], "
+                    f"as shown in [[fig:domain_results]].'\n"
+                )
+            except Exception:
+                pass
+
         BASE_CONTEXT = (
             f"Research idea:\n{idea_text}\n\n"
             f"Experiment summaries:\n{combined_summaries_str}\n\n"
             f"Figures: {', '.join(plot_names)}\n"
             f"Figure descriptions:\n{plot_descriptions_str}\n"
+            f"{_cite_hint}"
         )
         COMPOSE_SYS = (
             "You are an expert AI researcher. Write one paper section in precise markdown. "
@@ -1235,6 +1270,27 @@ def perform_writeup(
             updated_latex_code = updated_latex_code.rstrip() + "\n\\end{document}\n"
         with open(writeup_file, "w") as f:
             f.write(updated_latex_code)
+
+        # Resolve [[citation/xref tags]] → \cite{} / \ref{} / \eqref{}
+        try:
+            from ai_scientist.citation_pipeline.citation_resolver import (
+                resolve_latex_file, load_registry
+            )
+            _registry_for_resolve = _doc_registry or load_registry(_citation_index_dir)
+            if _registry_for_resolve:
+                warns = resolve_latex_file(writeup_file, _registry_for_resolve, warn_unresolved=True)
+                print(f"[writeup] Citation tags resolved ({len(warns)} warnings)")
+            else:
+                # No registry — strip any stray [[tags]] so tectonic doesn't choke
+                with open(writeup_file) as _f:
+                    _tex = _f.read()
+                _cleaned = re.sub(r"\[\[[^\]]*\]\]", "", _tex)
+                if _cleaned != _tex:
+                    with open(writeup_file, "w") as _f:
+                        _f.write(_cleaned)
+                    print("[writeup] Stripped unresolved [[tags]] (no registry)")
+        except Exception as _cite_exc:
+            print(f"[writeup] Citation resolver skipped: {_cite_exc}")
 
         # Multiple reflection loops on the final LaTeX
         for i in range(n_writeup_reflections):
