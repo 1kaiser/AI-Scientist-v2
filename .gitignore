@@ -194,3 +194,7 @@ final_papers/
 # HF
 cache/
 huggingface/
+
+# LaTeX RAG index cache (large, regenerated from latex2e.txt)
+data/latex_rag_*/
+data/latex2e.txt

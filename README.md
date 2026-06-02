@@ -82,16 +82,25 @@ Next, configure valid [AWS Credentials](https://docs.aws.amazon.com/cli/v1/userg
 
 You can run AI Scientist-v2 fully locally using Ollama models. This eliminates the need for external API keys (OpenAI, Gemini, or Claude).
 
-1. **Routing Mappings:** Mappings are defined inside `bfts_config.yaml`:
-   - Coding & Traceback Feedback: `ollama/granite4.1:30b`
-   - Writeup & Review: `ollama/gemma4:26b`
-   - Visual Critique (VLM): `ollama/llava:7b`
-2. **Native REST Client Integration:** Bypasses the standard Python SDK and routes calls directly to the local `/api/chat` endpoint at `http://localhost:11434`.
-3. **Dynamic Context Allocation:** Requests automatically specify `"options": {"num_ctx": 32768}` to ensure a 32k context size is used natively.
-4. **Health Check Verification:** Automatically checks the responsiveness of the Ollama server before dispatching queries.
-5. **Dynamic Memory Management:** Requests automatically specify `"keep_alive": 0` to unload models from memory immediately after execution, preventing GPU VRAM or CPU RAM exhaustion when cycling between large models.
-6. **Programmatic Server Management & Auto-Exit:** Automatically starts the Ollama server in the background if it is not already running. Cleans up and kills the programmatically started Ollama processes when the Python pipeline finishes.
-7. **Async Client Integration:** Provides `async_call_ollama_v1` using `httpx` to support asynchronous/concurrent network inference queries.
+**Recommended model stack for a single 24 GB GPU:**
+
+| Role | Model | Notes |
+|------|-------|-------|
+| Code generation | `ollama/qwen3.5:27b` | temp=0.2, deterministic |
+| Feedback / eval | `ollama/gemma4:e4b` | MoE, fast |
+| Compose / writeup | `ollama/gemma4:26b-a4b-it-q4_K_M` | MoE, 96 tok/s |
+| LaTeX formatting | `ollama/qwen3.5:27b` | temp=0.7 |
+| VLM (plot review) | `ollama/qwen2.5vl:7b` | vision-language |
+
+**Key implementation details:**
+
+1. **Task-aware model routing** (`ai_scientist/llm.py`): `route_model()` uses keyword fast-paths (eval→gemma4:e4b, code→qwen2.5-coder:7b, compose→gemma4:26b-a4b, latex→qwen3.5:27b) with a gemma4:26b LLM fallback for unknown tasks.
+2. **Per-task sampling parameters** (`_ollama_options()`): code tasks use temp=0.2/top_p=0.75/top_k=15; paper tasks use temp=0.7/top_p=0.90/top_k=40.
+3. **2-stage graph-ordered writeup**: Stage A composes 6 sections in dependency order (Methods→Results→Discussion→Conclusion→Introduction→Abstract) using gemma4:26b MoE. Stage B formats the markdown into LaTeX using qwen3.5:27b.
+4. **LaTeX RAG injection** (see below): Stage B retrieves relevant LaTeX syntax from `data/latex2e.txt` via LightRAG before generating the document.
+5. **Native REST client**: Bypasses the OpenAI SDK for `/api/chat` calls to avoid thinking-token overhead on Ollama thinking models.
+6. **Spawn context**: Subprocess executor uses `multiprocessing.get_context("spawn")` to avoid CUDA fork crashes.
+7. **Flash Attention + KV cache**: Set `OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_TYPE=q8_0` for Blackwell/Ampere GPUs.
 
 #### Semantic Scholar API (Literature Search)
 
@@ -108,6 +117,89 @@ export S2_API_KEY="YOUR_S2_KEY_HERE"
 # export AWS_SECRET_ACCESS_KEY="YOUR_AWS_SECRET_KEY"
 # export AWS_REGION_NAME="your-aws-region"
 ```
+
+## LaTeX RAG — Syntax-Aware Paper Writing
+
+AI Scientist-v2 integrates a local Retrieval-Augmented Generation (RAG) system that injects relevant LaTeX syntax documentation into the Stage B writeup prompt, reducing compilation errors caused by hallucinated commands.
+
+### Architecture
+
+```
+latex2e.txt (873 KB)
+      │
+      ▼ one-time indexing (LightRAG + Ollama embeddings)
+  data/latex_rag_<model>/   ← vector index + knowledge graph cache
+      │
+      ▼ query at write-time (~1-2s)
+  Stage B prompt  ←  "LATEX SYNTAX REFERENCE: ..."
+      │
+      ▼
+  qwen3.5:27b generates valid LaTeX
+```
+
+### Embedding Models
+
+Two embedding backends are supported and benchmarked:
+
+| Model | Ollama tag | Size | Dims | Context | MTEB Retrieval |
+|-------|-----------|------|------|---------|----------------|
+| **Qwen3-Embedding** *(default)* | `qwen3-embedding:0.6b` | 639 MB | 1024 | 32K | **64.65** |
+| EmbeddingGemma | `embeddinggemma:latest` | 622 MB | 768 | 2K | 62.49 |
+
+Qwen3-Embedding-0.6B is the default: higher retrieval score, larger context window (32K vs 2K), better for chunking large LaTeX reference sections.
+
+### Setup
+
+```bash
+# Pull embedding models
+ollama pull qwen3-embedding:0.6b
+ollama pull embeddinggemma:latest
+
+# Install LightRAG
+pip install lightrag-hku
+
+# Download LaTeX reference (one-time)
+wget -O data/latex2e.txt \
+  https://mirrors.in3.sahilister.net/ctan/info/latex2e-help-texinfo/latex2e.txt
+
+# Pre-build index (one-time, ~5-10 min — cached after)
+conda run -n ai_scientist python -c "
+from ai_scientist.latex_rag import build_index_for_model
+build_index_for_model('qwen3-embedding:0.6b')
+build_index_for_model('embeddinggemma:latest')
+"
+```
+
+### Benchmark
+
+Run the retrieval benchmark to compare both embedding models across 8 LaTeX query categories (figures, bibliography, equations, tables, sections, lists, document structure, formatting):
+
+```bash
+conda run -n ai_scientist python scripts/benchmark_latex_rag.py
+```
+
+Results are saved to `data/latex_rag_benchmark.json`. Example output:
+
+```
+Model                               Mode     Avg Recall  Avg Latency
+qwen3-embedding:0.6b                naive         87.5%        1.23s
+qwen3-embedding:0.6b                local         75.0%        3.45s
+embeddinggemma:latest               naive         75.0%        1.45s
+embeddinggemma:latest               local         62.5%        3.78s
+```
+
+### Configuration
+
+Override the default embedding model via environment variable:
+
+```bash
+export LATEX_RAG_EMBED_MODEL="embeddinggemma:latest"  # switch to EmbeddingGemma
+export LATEX_RAG_EMBED_MODEL="qwen3-embedding:0.6b"   # default: Qwen3
+```
+
+The RAG index is built lazily on first use and cached — subsequent runs are instant.
+
+---
 
 ## Generate Research Ideas
 
