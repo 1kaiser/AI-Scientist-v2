@@ -2,13 +2,13 @@
 Citation pipeline for AI-Scientist-v2.
 
 Three-stage author-blind citation system:
-  1. vlm_pdf_extractor   — qwen2.5vl:7b extracts structured text+visuals from PDFs
-  2. langextract_processor — LangExtract + Ollama indexes grounded facts by doc_id
-  3. citation_resolver   — replaces [[tags]] with proper LaTeX citations/cross-refs
+  1. vlm_pdf_extractor    — qwen2.5vl:7b extracts structured text+visuals from PDFs
+  2. langextract_processor — LangExtract (gemma4:e4b) extracts grounded facts;
+                             Qwen3-VL-Embedding-2B indexes them; no LightRAG here
+  3. citation_resolver    — replaces [[tags]] with proper LaTeX citations/cross-refs
 
-Usage:
-    from ai_scientist.citation_pipeline import full_pipeline
-    full_pipeline(pdf_dir="refs/", output_tex="latex/template.tex")
+Retrieval uses two-stage HF pipeline:
+  cosine sim (Qwen3-VL-Embedding-2B) → rerank (Qwen3-Reranker-4B) → top-k doc_ids
 """
 
 from .vlm_pdf_extractor import extract_pdf, extract_pdf_batch
