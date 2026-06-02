@@ -61,20 +61,46 @@ _EXAMPLES = [
 
 # ── Stage 2a: LangExtract fact extraction ──────────────────────────────── #
 
-def extract_facts(text_file: str, doc_id: str) -> list[dict]:
+def _filter_text_for_facts(text: str) -> str:
+    """
+    Keep only text/table/equation lines from the rich-tagged .txt file.
+    Drops [FIGURE-REGION] lines — VLM figure descriptions are not grounded
+    scientific claims suitable for fact extraction.
+    Also drops [FALLBACK] lines from pages where VLM failed entirely.
+    """
+    kept = []
+    for line in text.splitlines():
+        # Keep untagged lines (header, blank)
+        if not line.startswith("[PAGE"):
+            kept.append(line)
+            continue
+        # Drop figure-region and fallback lines
+        if "[FIGURE-REGION]" in line or "[FALLBACK]" in line:
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def extract_facts(text_file: str, doc_id: str,
+                  out_dir: str | None = None) -> list[dict]:
     """
     Run LangExtract on a VLM-extracted text file.
+
+    Filters out figure-region and fallback lines before sending to the LLM
+    so that only grounded text claims are extracted.
 
     Returns list of grounded facts:
       {doc_id, claim, claim_type, char_start, char_end, source_text}
     """
     with open(text_file, encoding="utf-8") as f:
-        text = f.read()
+        raw_text = f.read()
+
+    text = _filter_text_for_facts(raw_text)
 
     ollama_model = OllamaLanguageModel(model_id=LLM_MODEL, model_url=OLLAMA_HOST)
     try:
         results = lx.extract(
-            text,
+            text,  # filtered text (no figure regions)
             prompt_description=_PROMPT_DESC,
             examples=_EXAMPLES,
             model=ollama_model,
@@ -105,6 +131,19 @@ def extract_facts(text_file: str, doc_id: str) -> list[dict]:
             })
 
     print(f"[langextract] {doc_id}: extracted {len(facts)} facts")
+
+    # Update per-doc log if out_dir provided
+    if out_dir:
+        try:
+            from ai_scientist.citation_pipeline.vlm_pdf_extractor import load_doc_log, _save_doc_log
+            doc_log = load_doc_log(out_dir, doc_id)
+            doc_log.setdefault("stages", {})["langextract"] = {
+                "status": "done", "n_facts": len(facts), "llm": LLM_MODEL,
+            }
+            _save_doc_log(out_dir, doc_id, doc_log)
+        except Exception:
+            pass
+
     return facts
 
 
@@ -180,7 +219,9 @@ def build_citation_index(
         if doc_id in doc_registry and not force:
             continue
 
-        facts = extract_facts(entry["text_file"], doc_id)
+        # Pass out_dir so extract_facts can update the per-doc log
+        doc_out_dir = osp.dirname(entry["text_file"])
+        facts = extract_facts(entry["text_file"], doc_id, out_dir=doc_out_dir)
         doc_registry[doc_id] = {
             "doc_id":       doc_id,
             "bibtex_key":   entry["bibtex_key"],
@@ -194,6 +235,24 @@ def build_citation_index(
 
     if new_docs:
         _build_hf_index(index_dir, doc_registry)
+
+        # Mark embedding stage done in each new doc's log
+        for entry in registry_entries:
+            doc_id = entry["doc_id"]
+            if doc_id not in new_docs:
+                continue
+            doc_out_dir = osp.dirname(entry["text_file"])
+            try:
+                from ai_scientist.citation_pipeline.vlm_pdf_extractor import load_doc_log, _save_doc_log
+                doc_log = load_doc_log(doc_out_dir, doc_id)
+                doc_log.setdefault("stages", {})["hf_embedding"] = {
+                    "status": "done",
+                    "n_facts": len(doc_registry.get(doc_id, {}).get("facts", [])),
+                    "embed_model": "Qwen/Qwen3-VL-Embedding-2B",
+                }
+                _save_doc_log(doc_out_dir, doc_id, doc_log)
+            except Exception:
+                pass
 
     with open(registry_path, "w") as f:
         json.dump(doc_registry, f, indent=2)

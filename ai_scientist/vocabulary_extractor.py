@@ -33,17 +33,53 @@ PAPER EXCERPTS:
 Return ONLY the JSON object, no other text."""
 
 
-def _extract_text_samples(txt_file: str, max_chars: int = 3000) -> str:
-    """Pull a representative sample from a VLM-extracted text file."""
+def _extract_text_samples(txt_file: str, max_chars: int = 3000,
+                          layout_file: str | None = None) -> str:
+    """
+    Pull a representative style sample from a VLM-extracted text file.
+
+    Uses layout metadata (if available) to prefer text-dense pages:
+    - Skips pages where layout has figures dominating (n_text_blocks < 5)
+    - Always uses [TEXT] tagged lines; skips [FIGURE-REGION] and [FALLBACK]
+    """
+    # Build set of preferred page numbers from layout metadata
+    good_pages: set[int] = set()
+    if layout_file and osp.exists(layout_file):
+        try:
+            with open(layout_file) as f:
+                page_layouts = json.load(f)
+            for pl in page_layouts:
+                # Prefer pages with substantial text and few/no figures
+                if pl.get("n_text_blocks", 0) >= 5 and len(pl.get("figures", [])) == 0:
+                    good_pages.add(pl["page_num"])
+        except Exception:
+            pass
+
     with open(txt_file, encoding="utf-8", errors="ignore") as f:
         content = f.read()
-    # Prefer [TEXT] blocks, skip [FIGURE]/[TABLE] metadata
+
     text_lines = []
     for line in content.splitlines():
-        if "[TEXT]" in line:
-            text_lines.append(re.sub(r"\[PAGE \d+\]\[TEXT\]\s*", "", line).strip())
+        # Only keep rich-tagged text lines from text columns
+        if "[TEXT]" not in line:
+            continue
+        if "[FIGURE-REGION]" in line or "[FALLBACK]" in line:
+            continue
+        # If we have page preferences, filter by page
+        if good_pages:
+            pg_match = re.search(r"\[PAGE (\d+)\]", line)
+            if pg_match and int(pg_match.group(1)) not in good_pages:
+                continue
+        text_lines.append(re.sub(r"\[PAGE \d+\]\[[^\]]+\]\[TEXT\]\s*", "", line).strip())
+
     sample = " ".join(text_lines)[:max_chars]
-    return sample if sample else content[:max_chars]
+    # Fallback: use all text lines if filtered result is too short
+    if len(sample) < 500:
+        all_text = [re.sub(r"\[PAGE \d+\]\[[^\]]+\]\[TEXT\]\s*", "", l).strip()
+                    for l in content.splitlines() if "[TEXT]" in l
+                    and "[FIGURE-REGION]" not in l and "[FALLBACK]" not in l]
+        sample = " ".join(all_text)[:max_chars]
+    return sample
 
 
 def extract_vocabulary_profile(
@@ -74,9 +110,10 @@ def extract_vocabulary_profile(
     # Collect text samples from up to max_docs papers
     samples = []
     for doc_id, entry in list(registry.items())[:max_docs]:
-        txt_file = entry.get("text_file", "")
+        txt_file    = entry.get("text_file", "")
+        layout_file = entry.get("layout_file", "")
         if txt_file and osp.exists(txt_file):
-            sample = _extract_text_samples(txt_file)
+            sample = _extract_text_samples(txt_file, layout_file=layout_file or None)
             if sample:
                 samples.append(f"--- Paper: {doc_id} ---\n{sample}")
 
