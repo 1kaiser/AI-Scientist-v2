@@ -307,8 +307,11 @@ if __name__ == "__main__":
             paper_content = load_paper(pdf_path)
             client, client_model = create_client(args.model_review)
             review_text = perform_review(paper_content, client_model, client)
+            # VLM image review needs a vision-capable model, not the text review model
+            vlm_review_model = os.environ.get("VLM_REVIEW_MODEL", "ollama/qwen2.5vl:7b")
+            vlm_review_client, vlm_review_client_model = create_client(vlm_review_model)
             review_img_cap_ref = perform_imgs_cap_ref_review(
-                client, client_model, pdf_path
+                vlm_review_client, vlm_review_client_model, pdf_path
             )
             with open(osp.join(idea_dir, "review_text.txt"), "w") as f:
                 f.write(json.dumps(review_text, indent=4))
