@@ -118,6 +118,58 @@ export S2_API_KEY="YOUR_S2_KEY_HERE"
 # export AWS_REGION_NAME="your-aws-region"
 ```
 
+## Figure RAG — Hallucination-Free Figure References
+
+Stage B (LaTeX formatting) sometimes invents `\includegraphics` filenames that don't exist, causing fatal tectonic compilation errors. Figure RAG solves this by retrieving only figures that physically exist on disk, ranked by relevance to the section being written.
+
+### How it works
+
+```
+experiments/<run>/figures/*.png
+        │
+        ▼ text embed (filename → description)  e.g. "cross domain mAP degradation"
+  .figure_rag/ index  (qwen3-embedding:0.6b)
+        │
+        ▼ query at Stage B write time
+  section topic: "Results show performance drop across domains"
+        │
+        ▼ returns ranked filenames that EXIST on disk
+  ["02_Cross_Domain_Generalization_Failure.png", "03_Aggregated_Robustness_Gap.png"]
+        │
+        ▼ Stage B prompt: "VALID FIGURES — use ONLY these filenames"
+  no more tectonic "Unable to load picture" errors
+```
+
+### Module: `ai_scientist/figure_rag.py`
+
+```python
+from ai_scientist.figure_rag import get_figures_for_section, list_valid_figures
+
+# Get all existing figures
+valid = list_valid_figures("experiments/run/figures")
+
+# Get top-4 most relevant to a section
+figs = get_figures_for_section(
+    figures_dir="experiments/run/figures",
+    section_topic="cross-domain generalization failure mAP comparison",
+    top_k=4,
+)
+# → ["02_Cross_Domain_Generalization_Failure.png", ...]
+```
+
+### Qwen3-VL-Embedding Status
+
+`MedAIBase/Qwen3-VL-Embedding:2b` (3.4 GB) is available on Ollama but currently packaged as a **completion** model (`capabilities: completion`), making `/api/embed` unavailable. Text-description embeddings via `qwen3-embedding:0.6b` are used instead — sufficient for filename→topic matching.
+
+When official Ollama VL-embedding support arrives, swap `FIGURE_RAG_EMBED_MODEL` to enable true pixel-level image retrieval (VQA-style figure search across saved plots).
+
+```bash
+# Future: when MedAIBase publishes embedding-capable variant
+export FIGURE_RAG_EMBED_MODEL="MedAIBase/Qwen3-VL-Embedding:2b"
+```
+
+---
+
 ## LaTeX RAG — Syntax-Aware Paper Writing
 
 AI Scientist-v2 integrates a local Retrieval-Augmented Generation (RAG) system that injects relevant LaTeX syntax documentation into the Stage B writeup prompt, reducing compilation errors caused by hallucinated commands.

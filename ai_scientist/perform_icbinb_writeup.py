@@ -1172,17 +1172,33 @@ def perform_writeup(
         except Exception as _rag_exc:
             print(f"[Stage B] LaTeX RAG skipped: {_rag_exc}")
 
+        # Figure RAG: rank existing figures by relevance to paper content
+        rag_figures = plot_names  # fallback: all existing figures
+        try:
+            from ai_scientist.figure_rag import get_figures_for_section, list_valid_figures
+            valid_figs = list_valid_figures(figures_dir)
+            if valid_figs:
+                rag_figures = get_figures_for_section(
+                    figures_dir,
+                    section_topic=paper_markdown[:500],  # use intro of composed paper
+                    top_k=min(8, len(valid_figs)),
+                )
+                print(f"[Stage B] Figure RAG selected {len(rag_figures)}/{len(valid_figs)} figures")
+        except Exception as _fig_exc:
+            print(f"[Stage B] Figure RAG skipped: {_fig_exc}")
+
+        valid_fig_list = ", ".join(rag_figures) if rag_figures else "(none available)"
         format_prompt = (
             f"Convert the following paper content into a complete LaTeX document using the provided template.\n"
             f"{latex_rag_hint}\n"
             f"PAPER CONTENT (markdown):\n{paper_markdown}\n\n"
             f"EXISTING LATEX TEMPLATE:\n{writeup_text}\n\n"
-            f"Figures to include: {', '.join(plot_names)}\n"
+            f"VALID FIGURES (use ONLY these exact filenames — all others will cause compile errors):\n{valid_fig_list}\n"
             f"Citations from references.bib are available.\n\n"
             "Rules:\n"
             "1. Keep the template structure (\\documentclass, packages, etc.) — do NOT add duplicate \\usepackage lines\n"
             "2. Fill in the content sections from the markdown\n"
-            "3. Add \\includegraphics only for figures that exist in the figures/ folder\n"
+            "3. \\includegraphics MUST use only filenames from the VALID FIGURES list above\n"
             "4. Do NOT change content — only convert markdown to LaTeX syntax\n"
             "5. Always end the document with \\end{document}\n\n"
             "IMPORTANT: Start your response with:\n```latex\n\\documentclass"
