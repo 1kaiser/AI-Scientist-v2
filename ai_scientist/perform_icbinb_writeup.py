@@ -56,8 +56,61 @@ def _pdflatex_works():
         return False
 
 
+def _sanitize_latex(cwd):
+    """Fix common LLM-generated LaTeX issues before compilation."""
+    tex_path = osp.join(cwd, "template.tex")
+    with open(tex_path) as f:
+        src = f.read()
+    original = src
+
+    # 1. Ensure \end{document} present
+    if r"\end{document}" not in src:
+        src = src.rstrip() + "\n\\end{document}\n"
+
+    # 2. Remove \includegraphics refs to missing files
+    fig_dir = osp.join(cwd, "..", "figures")
+    def _check_fig(m):
+        opts = m.group(1) or ""
+        fname = m.group(2).strip()
+        # tectonic searches graphicspath; just check ../figures/
+        candidates = [
+            osp.join(fig_dir, fname),
+            osp.join(fig_dir, fname + ".png"),
+            osp.join(fig_dir, fname + ".pdf"),
+        ]
+        if any(osp.exists(c) for c in candidates):
+            return m.group(0)
+        return f"% [removed missing figure: {fname}]"
+    src = re.sub(
+        r"\\includegraphics(?:\[([^\]]*)\])?\{([^}]+)\}",
+        _check_fig, src
+    )
+
+    # 3. Remove duplicate \usepackage{amsmath} (keep first)
+    seen_pkgs = set()
+    lines = src.splitlines(keepends=True)
+    out = []
+    for line in lines:
+        m = re.match(r"\s*\\usepackage(?:\[[^\]]*\])?\{([^}]+)\}", line)
+        if m:
+            pkg = m.group(1).strip()
+            if pkg in seen_pkgs:
+                out.append(f"% [removed duplicate \\usepackage{{{pkg}}}]\n")
+                continue
+            seen_pkgs.add(pkg)
+        out.append(line)
+    src = "".join(out)
+
+    if src != original:
+        with open(tex_path, "w") as f:
+            f.write(src)
+        print("_sanitize_latex: applied fixes to template.tex")
+
+
 def compile_latex(cwd, pdf_file, timeout=120):
     print("GENERATING LATEX")
+
+    _sanitize_latex(cwd)
 
     # Prefer tectonic (standalone, no format files needed) over pdflatex
     import shutil as _shutil
@@ -1136,6 +1189,8 @@ def perform_writeup(
         else:
             print("No LaTeX found in writeup response — retrying.")
             return False
+        if r"\end{document}" not in updated_latex_code:
+            updated_latex_code = updated_latex_code.rstrip() + "\n\\end{document}\n"
         with open(writeup_file, "w") as f:
             f.write(updated_latex_code)
 
@@ -1161,18 +1216,23 @@ def perform_writeup(
             print(f"[green]Compiling PDF for reflection {i+1}...[/green]")
             compile_latex(latex_folder, reflection_pdf)
 
-            review_img_cap_ref = perform_imgs_cap_ref_review(
-                vlm_client, vlm_model, reflection_pdf
-            )
+            if not osp.exists(reflection_pdf):
+                print(f"WARNING: reflection {i+1} PDF not generated, skipping VLM review.")
+                review_img_cap_ref = ""
+                analysis_duplicate_figs = ""
+            else:
+                review_img_cap_ref = perform_imgs_cap_ref_review(
+                    vlm_client, vlm_model, reflection_pdf
+                )
 
-            # Detect duplicate figures between main text and appendix
-            analysis_duplicate_figs = detect_duplicate_figures(
-                vlm_client, vlm_model, reflection_pdf
-            )
+                # Detect duplicate figures between main text and appendix
+                analysis_duplicate_figs = detect_duplicate_figures(
+                    vlm_client, vlm_model, reflection_pdf
+                )
             print(analysis_duplicate_figs)
 
             # Get reflection_page_info
-            reflection_page_info = get_reflection_page_info(reflection_pdf, page_limit)
+            reflection_page_info = get_reflection_page_info(reflection_pdf, page_limit) if osp.exists(reflection_pdf) else ""
 
             check_output = os.popen(  # TODO: should prob use subprocess instead
                 f"chktex {writeup_file} -q -n2 -n24 -n13 -n1"
