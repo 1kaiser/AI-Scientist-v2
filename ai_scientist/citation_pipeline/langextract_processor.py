@@ -107,15 +107,18 @@ def extract_facts(text_file: str, doc_id: str) -> list[dict]:
     for result in results:
         for extraction in (result.extractions or []):
             ci = extraction.char_interval
+            # LangExtract CharInterval uses .begin/.end (not .start/.end)
+            c_start = getattr(ci, "begin", None) or getattr(ci, "start", 0) or 0
+            c_end   = getattr(ci, "end",   None) or 0
             facts.append({
                 "doc_id":      doc_id,
                 "claim":       extraction.extraction_text,
                 "claim_type":  extraction.extraction_class,
                 "numeric":     None,
                 "visual_ref":  None,
-                "char_start":  ci.start if ci else 0,
-                "char_end":    ci.end   if ci else 0,
-                "source_text": text[ci.start:ci.end][:300] if ci else "",
+                "char_start":  c_start if ci else 0,
+                "char_end":    c_end   if ci else 0,
+                "source_text": text[c_start:c_end][:300] if ci else "",
             })
 
     print(f"[langextract] {doc_id}: extracted {len(facts)} facts")

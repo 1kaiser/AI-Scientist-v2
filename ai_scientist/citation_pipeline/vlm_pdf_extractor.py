@@ -68,11 +68,8 @@ def _call_vlm(image_b64: str, page_num: int) -> list[dict]:
         "model": VLM_MODEL,
         "messages": [{
             "role": "user",
-            "content": [
-                {"type": "image_url",
-                 "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
-                {"type": "text", "text": _PAGE_PROMPT.replace("<n>", str(page_num))},
-            ],
+            "content": _PAGE_PROMPT.replace("<n>", str(page_num)),
+            "images": [image_b64],
         }],
         "stream": False,
         "options": {"num_ctx": 4096, "temperature": 0.1},
