@@ -22,10 +22,15 @@ import langextract as lx
 from langextract.providers.ollama import OllamaLanguageModel
 from langextract.core.data import Extraction, ExampleData
 
-OLLAMA_HOST  = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-EMBED_MODEL  = os.environ.get("CITATION_EMBED_MODEL", "qwen3-embedding:0.6b")
-EMBED_DIM    = 1024
-LLM_MODEL    = os.environ.get("CITATION_LLM_MODEL", "gemma4:e4b")
+OLLAMA_HOST   = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+EMBED_MODEL   = os.environ.get("CITATION_EMBED_MODEL", "qwen3-embedding:0.6b")
+EMBED_DIM     = 1024
+LLM_MODEL     = os.environ.get("CITATION_LLM_MODEL", "gemma4:e4b")
+EMBED_BACKEND = os.environ.get("CITATION_EMBED_BACKEND", "ollama")  # "ollama" | "hf"
+
+# HF index artefacts written alongside doc_registry.json
+_HF_EMB_FILE   = "fact_embeddings.npy"
+_HF_INDEX_FILE = "fact_index.json"
 
 _PROMPT_DESC = (
     "Extract scientific findings from this document excerpt. "
@@ -215,14 +220,124 @@ def build_citation_index(
         }
 
     if all_new_facts:
-        print(f"[langextract] Indexing {len(all_new_facts)} facts into LightRAG ...")
-        asyncio.run(_index_facts_async(all_new_facts, index_dir))
+        if EMBED_BACKEND == "hf":
+            # HF path: save numpy embedding index (no LightRAG needed)
+            _build_hf_index(index_dir, doc_registry)
+        else:
+            print(f"[langextract] Indexing {len(all_new_facts)} facts into LightRAG ...")
+            asyncio.run(_index_facts_async(all_new_facts, index_dir))
 
     # Save updated registry
     with open(registry_path, "w") as f:
         json.dump(doc_registry, f, indent=2)
 
     return doc_registry
+
+
+# ── HF two-stage retrieval (embed → rerank) ─────────────────────────────── #
+
+def _hf_index_path(index_dir: str) -> tuple[str, str]:
+    return (
+        osp.join(index_dir, _HF_EMB_FILE),
+        osp.join(index_dir, _HF_INDEX_FILE),
+    )
+
+
+def _build_hf_index(index_dir: str, doc_registry: dict) -> None:
+    """
+    Build and save Qwen3-VL-Embedding-2B fact embeddings for all docs.
+
+    Outputs:
+      {index_dir}/fact_embeddings.npy  — (N, 2048) float32 array
+      {index_dir}/fact_index.json      — list of {doc_id, fact_text}
+    """
+    import numpy as np
+    from ai_scientist.hf_embed import get_embedder
+
+    fact_records: list[dict] = []
+    for doc_id, entry in doc_registry.items():
+        for fact in entry.get("facts", []):
+            fact_records.append({
+                "doc_id":    doc_id,
+                "fact_text": f"{fact['claim_type']}: {fact['claim']}",
+            })
+
+    if not fact_records:
+        print("[hf_index] No facts to embed.")
+        return
+
+    embedder = get_embedder()
+    instr = "Retrieve scientific facts relevant to this research query."
+    texts = [r["fact_text"] for r in fact_records]
+    print(f"[hf_index] Embedding {len(texts)} facts with Qwen3-VL-Embedding-2B ...")
+    embs = embedder.embed_texts(texts, instruction=instr, batch_size=8)  # (N, 2048)
+
+    emb_path, idx_path = _hf_index_path(index_dir)
+    np.save(emb_path, embs)
+    with open(idx_path, "w") as f:
+        json.dump(fact_records, f)
+    print(f"[hf_index] Saved {embs.shape[0]} embeddings → {emb_path}")
+
+
+def query_citations_hf(
+    index_dir: str,
+    topic: str,
+    top_k_docs: int = 5,
+    n_candidates: int = 20,
+) -> list[str]:
+    """
+    Two-stage HF citation retrieval:
+      1. Qwen3-VL-Embedding-2B cosine similarity → top-N candidate facts
+      2. Qwen3-Reranker-4B cross-encoder         → top-k doc_ids
+
+    Falls back to Ollama path if HF index doesn't exist yet.
+    """
+    import numpy as np
+    from ai_scientist.hf_embed import get_embedder
+    from ai_scientist.hf_rerank import get_reranker
+
+    emb_path, idx_path = _hf_index_path(index_dir)
+    if not osp.exists(emb_path) or not osp.exists(idx_path):
+        print("[hf_query] HF index not found, falling back to Ollama path.")
+        return query_citations(index_dir, topic, top_k_docs)
+
+    with open(idx_path) as f:
+        fact_records = json.load(f)
+    fact_embs = np.load(emb_path)  # (N, 2048)
+
+    # Stage 1: embedding retrieval
+    embedder = get_embedder()
+    instr = "Retrieve scientific facts relevant to this research query."
+    query_emb = embedder.embed_texts([topic], instruction=instr)[0]  # (2048,)
+    cos_scores = fact_embs @ query_emb                               # (N,)
+    top_indices = cos_scores.argsort()[::-1][:n_candidates]
+    candidates = [(fact_records[i], float(cos_scores[i])) for i in top_indices]
+
+    print(f"[hf_query] Stage 1: top-{len(candidates)} candidates retrieved")
+
+    # Stage 2: reranking
+    reranker = get_reranker()
+    cand_texts = [c[0]["fact_text"] for c in candidates]
+    rerank_scores = reranker.rerank(topic, cand_texts)
+
+    ranked = sorted(
+        zip(candidates, rerank_scores),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for (record, _emb_score), rr_score in ranked:
+        doc_id = record["doc_id"]
+        if doc_id not in seen:
+            seen.add(doc_id)
+            result.append(doc_id)
+            print(f"[hf_query]   {doc_id} rerank_score={rr_score:.4f}")
+        if len(result) >= top_k_docs:
+            break
+
+    return result
 
 
 def enrich_registry_from_bibtex(
@@ -273,8 +388,14 @@ def query_citations(
     """
     Query the citation index for doc_ids relevant to topic.
 
+    Routes to HF two-stage retrieval (embed→rerank) when
+    CITATION_EMBED_BACKEND=hf, otherwise uses LightRAG naive search.
+
     Returns list of doc_ids sorted by relevance (most relevant first).
     """
+    if EMBED_BACKEND == "hf":
+        return query_citations_hf(index_dir, topic, top_k_docs)
+
     result = asyncio.run(_query_async(index_dir, topic, top_k_docs))
 
     # Extract DOC_ID: references from retrieved text
