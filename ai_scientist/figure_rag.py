@@ -62,6 +62,7 @@ async def _make_fig_rag(rag_dir: str):
                 ollama_embed,
                 embed_model=FIGURE_EMBED_MODEL,
                 host=OLLAMA_HOST,
+                keep_alive=300,
             ),
         ),
     )

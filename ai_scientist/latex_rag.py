@@ -58,7 +58,12 @@ async def _make_rag(embed_model: str):
         embedding_func=EmbeddingFunc(
             embedding_dim=cfg["dim"],
             max_token_size=cfg["max_token_size"],
-            func=partial(ollama_embed, embed_model=embed_model, host=OLLAMA_HOST),
+            func=partial(
+                ollama_embed,
+                embed_model=embed_model,
+                host=OLLAMA_HOST,
+                keep_alive=300,   # keep embedding model warm for 5 min
+            ),
         ),
     )
     await rag.initialize_storages()
