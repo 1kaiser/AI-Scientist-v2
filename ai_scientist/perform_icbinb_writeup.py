@@ -1115,6 +1115,17 @@ def perform_writeup(
             except Exception:
                 pass
 
+        # Vocabulary style hint from processed papers (research_engine_v17: extract_vocabulary)
+        _vocab_hint = ""
+        try:
+            from ai_scientist.vocabulary_extractor import (
+                extract_vocabulary_profile, format_vocab_hint
+            )
+            _vocab_profile = extract_vocabulary_profile(_citation_index_dir)
+            _vocab_hint = format_vocab_hint(_vocab_profile)
+        except Exception:
+            pass
+
         BASE_CONTEXT = (
             f"Research idea:\n{idea_text}\n\n"
             f"Experiment summaries:\n{combined_summaries_str}\n\n"
@@ -1126,18 +1137,37 @@ def perform_writeup(
             "You are an expert AI researcher. Write one paper section in precise markdown. "
             "Use ONLY data from the provided experiment summaries. "
             "Include specific numbers, metrics, and findings. No invented facts. "
-            "Do NOT write LaTeX — plain markdown only."
+            "Do NOT write LaTeX — plain markdown only.\n"
+            f"{_vocab_hint}"
+        )
+
+        # Document Composer (research_engine_v17: NODE B3 macro-reviewer)
+        REVIEW_SYS = (
+            "You are a senior paper editor reviewing a draft section for consistency. "
+            "Check ONLY: (1) does it contradict any previous section? "
+            "(2) does it stay on topic for this section type? "
+            "Reply with either 'OK' if it is fine, or list specific issues to fix (max 3 bullet points)."
         )
 
         def compose_section(section_name, instructions, storyline_so_far, max_retries=3):
+            # Trajectory memory: load past failures for this section
+            traj_prefix = ""
+            try:
+                from ai_scientist.trajectory_memory import load_failures, save_failure
+                traj_prefix = load_failures(base_folder, section_name)
+            except Exception:
+                save_failure = None
+
             recent = "\n\n".join(storyline_so_far[-2:]) if storyline_so_far else ""
             prompt = (
+                f"{traj_prefix}"
                 f"{BASE_CONTEXT}\n"
                 f"SECTIONS WRITTEN SO FAR:\n{recent}\n\n"
                 f"Now write ONLY the '{section_name}' section.\n"
                 f"{instructions}\n"
                 f"Start with '## {section_name}'"
             )
+            text = ""
             for attempt in range(max_retries):
                 text, _ = get_response_from_llm(
                     prompt=prompt,
@@ -1148,11 +1178,80 @@ def perform_writeup(
                     max_tokens=1024,
                 )
                 if text and len(text.strip()) > 50:
-                    print(f"  {section_name}: {len(text)} chars")
-                    return text
+                    break
                 print(f"  {section_name}: empty response (attempt {attempt+1}/{max_retries}), retrying...")
-            print(f"  {section_name}: all retries empty — using placeholder")
-            return f"## {section_name}\n\nResults from the experiments are described in the experiment summaries."
+            else:
+                reason = "All retries returned empty or too-short content"
+                if save_failure:
+                    try:
+                        save_failure(base_folder, section_name, reason, text[:200], attempt)
+                    except Exception:
+                        pass
+                print(f"  {section_name}: all retries empty — using placeholder")
+                return f"## {section_name}\n\nResults from the experiments are described in the experiment summaries."
+
+            # Document Composer review (research_engine_v17: NODE B3 macro-reviewer)
+            try:
+                storyline_so_far_str = "\n\n".join(storyline_so_far[-3:])
+                review_prompt = (
+                    f"SECTIONS WRITTEN SO FAR:\n{storyline_so_far_str}\n\n"
+                    f"DRAFT '{section_name}' SECTION:\n{text}\n\n"
+                    "Does this draft contradict or go off-topic? Reply 'OK' or list issues."
+                )
+                review, _ = get_response_from_llm(
+                    prompt=review_prompt,
+                    client=reasoning_client,
+                    model=reasoning_model,
+                    system_message=REVIEW_SYS,
+                    print_debug=False,
+                    max_tokens=256,
+                )
+                if review and "ok" not in review.lower()[:10] and len(review.strip()) > 5:
+                    # Issues found — revise once
+                    revise_prompt = (
+                        f"{prompt}\n\n"
+                        f"PREVIOUS DRAFT:\n{text}\n\n"
+                        f"EDITOR FEEDBACK:\n{review}\n\n"
+                        "Revise the section addressing the feedback above."
+                    )
+                    revised, _ = get_response_from_llm(
+                        prompt=revise_prompt,
+                        client=reasoning_client,
+                        model=reasoning_model,
+                        system_message=COMPOSE_SYS,
+                        print_debug=False,
+                        max_tokens=1024,
+                    )
+                    if revised and len(revised.strip()) > 50:
+                        print(f"  {section_name}: revised by Document Composer")
+                        text = revised
+            except Exception:
+                pass  # Document Composer is optional
+
+            print(f"  {section_name}: {len(text)} chars")
+            return text
+
+        # ── N+2 Introduction builder (research_engine_v17 dynamic structure) ──
+        def _build_intro_instructions(exp_summaries_str: str, n_stages: int) -> str:
+            """Build N+2 paragraph instructions for the Introduction."""
+            stage_lines = []
+            for i in range(1, n_stages + 1):
+                stage_lines.append(
+                    f"  Para {i+1}: Stage {i} — state the problem it addresses, "
+                    f"the gap in prior work, and the key finding."
+                )
+            outro = f"  Para {n_stages+2}: List research objectives (imperative mood, no citations)."
+            return (
+                "Write the Introduction with this EXACT paragraph structure:\n"
+                "  Para 1: Domain context — what is the broad problem? Why does it matter? "
+                "(general observations, no specific results yet)\n"
+                + "\n".join(stage_lines) + "\n"
+                + outro + "\n"
+                "Written LAST so you can reference exact results from other sections. "
+                "No invented citations — use [[doc_id]] tags for any prior work."
+            )
+
+        n_stages = len([s for s in (filtered_summaries_for_writeup or {}).keys()]) or 4
 
         storyline = []
         storyline.append(compose_section(
@@ -1177,7 +1276,7 @@ def perform_writeup(
         ))
         storyline.append(compose_section(
             "Introduction",
-            "Motivate the problem. State the hypothesis. Summarize contributions and findings (written LAST so it references results).",
+            _build_intro_instructions(combined_summaries_str, n_stages),
             storyline,
         ))
         storyline.append(compose_section(
