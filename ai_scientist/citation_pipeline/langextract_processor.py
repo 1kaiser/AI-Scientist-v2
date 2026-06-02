@@ -1,14 +1,18 @@
 """
-Stage 2: LangExtract + HF embedding/reranking on VLM-extracted text files.
+Stage 2: LangExtract fact extraction + embeddinggemma semantic search.
 
 Pipeline:
-  extract_facts()       — LangExtract + gemma4:e4b extracts grounded claims
-  build_citation_index()— embeds facts with Qwen3-VL-Embedding-2B → .npy
-  query_citations()     — cosine sim → Qwen3-Reranker-4B → top-k doc_ids
+  extract_facts()        — LangExtract + gemma4:e4b → grounded claims from text
+  build_citation_index() — embeds facts via embeddinggemma:latest (Ollama) → .npy
+  query_citations()      — embed query → cosine sim → top-k doc_ids
+                           optional Qwen3-Reranker-4B rerank pass for precision
 
-No LightRAG in this stage (LightRAG is used only in latex_rag.py for the
-LaTeX syntax knowledge graph). Facts are stored as numpy arrays alongside
-doc_registry.json for fast, deterministic retrieval without LLM calls.
+Embedding model: embeddinggemma:latest (768-dim, Ollama /api/embed)
+  - Already available in Ollama, no GPU model loading overhead
+  - Dedicated text embedding model → better semantic similarity than VLMs
+  - keep_alive=300 prevents eviction between index build and query calls
+
+No LightRAG here — facts stored as numpy arrays for fast deterministic retrieval.
 """
 
 import json
@@ -16,14 +20,18 @@ import os
 import os.path as osp
 import re
 
+import numpy as np
+import requests
 import langextract as lx
 from langextract.providers.ollama import OllamaLanguageModel
 from langextract.core.data import Extraction, ExampleData
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 LLM_MODEL   = os.environ.get("CITATION_LLM_MODEL", "gemma4:e4b")
+EMBED_MODEL = os.environ.get("CITATION_EMBED_MODEL", "embeddinggemma:latest")
+EMBED_DIM   = 768   # embeddinggemma native dimension
 
-# HF index artefacts stored alongside doc_registry.json
+# Index artefacts stored alongside doc_registry.json
 _EMB_FILE   = "fact_embeddings.npy"
 _INDEX_FILE = "fact_index.json"
 
@@ -147,46 +155,65 @@ def extract_facts(text_file: str, doc_id: str,
     return facts
 
 
-# ── Stage 2b: HF embedding index ───────────────────────────────────────── #
+# ── Stage 2b: embeddinggemma semantic index ─────────────────────────────── #
 
 def _index_paths(index_dir: str) -> tuple[str, str]:
     return osp.join(index_dir, _EMB_FILE), osp.join(index_dir, _INDEX_FILE)
 
 
-def _build_hf_index(index_dir: str, doc_registry: dict) -> None:
+def _embed_texts(texts: list[str], batch_size: int = 32) -> np.ndarray:
     """
-    Embed all facts with Qwen3-VL-Embedding-2B and save to disk.
+    Embed texts using embeddinggemma:latest via Ollama /api/embed.
+
+    Returns L2-normalised float32 array of shape (N, EMBED_DIM).
+    keep_alive=300 prevents model eviction between index build and query.
+    """
+    all_embs: list[list[float]] = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i : i + batch_size]
+        resp  = requests.post(
+            f"{OLLAMA_HOST}/api/embed",
+            json={"model": EMBED_MODEL, "input": batch, "keep_alive": 300},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        all_embs.extend(resp.json()["embeddings"])
+
+    embs  = np.array(all_embs, dtype=np.float32)
+    norms = np.linalg.norm(embs, axis=1, keepdims=True)
+    return embs / np.maximum(norms, 1e-8)
+
+
+def _build_embed_index(index_dir: str, doc_registry: dict) -> None:
+    """
+    Embed all extracted facts with embeddinggemma and save to disk.
 
     Outputs:
-      fact_embeddings.npy  — (N, 2048) float32
-      fact_index.json      — [{doc_id, fact_text}, ...]
+      fact_embeddings.npy  — (N, 768) float32, L2-normalised
+      fact_index.json      — [{doc_id, fact_text, claim_type}, ...]
     """
-    import numpy as np
-    from ai_scientist.hf_embed import get_embedder
-
-    fact_records = []
+    fact_records: list[dict] = []
     for doc_id, entry in doc_registry.items():
         for fact in entry.get("facts", []):
             fact_records.append({
-                "doc_id":    doc_id,
-                "fact_text": f"{fact['claim_type']}: {fact['claim']}",
+                "doc_id":     doc_id,
+                "claim_type": fact.get("claim_type", ""),
+                "fact_text":  f"{fact.get('claim_type','')}: {fact['claim']}",
             })
 
     if not fact_records:
-        print("[hf_index] No facts to embed.")
+        print("[embed_index] No facts to embed.")
         return
 
-    embedder = get_embedder()
-    instr = "Retrieve scientific facts relevant to this research query."
     texts = [r["fact_text"] for r in fact_records]
-    print(f"[hf_index] Embedding {len(texts)} facts with Qwen3-VL-Embedding-2B ...")
-    embs = embedder.embed_texts(texts, instruction=instr, batch_size=8)
+    print(f"[embed_index] Embedding {len(texts)} facts with {EMBED_MODEL} ...")
+    embs = _embed_texts(texts)
 
     emb_path, idx_path = _index_paths(index_dir)
     np.save(emb_path, embs)
     with open(idx_path, "w") as f:
-        json.dump(fact_records, f)
-    print(f"[hf_index] Saved {embs.shape[0]} embeddings → {emb_path}")
+        json.dump(fact_records, f, indent=2)
+    print(f"[embed_index] Saved {embs.shape[0]}×{embs.shape[1]} → {emb_path}")
 
 
 def build_citation_index(
@@ -234,7 +261,7 @@ def build_citation_index(
         new_docs.append(doc_id)
 
     if new_docs:
-        _build_hf_index(index_dir, doc_registry)
+        _build_embed_index(index_dir, doc_registry)
 
         # Mark embedding stage done in each new doc's log
         for entry in registry_entries:
@@ -245,10 +272,11 @@ def build_citation_index(
             try:
                 from ai_scientist.citation_pipeline.vlm_pdf_extractor import load_doc_log, _save_doc_log
                 doc_log = load_doc_log(doc_out_dir, doc_id)
-                doc_log.setdefault("stages", {})["hf_embedding"] = {
+                doc_log.setdefault("stages", {})["embedding"] = {
                     "status": "done",
                     "n_facts": len(doc_registry.get(doc_id, {}).get("facts", [])),
-                    "embed_model": "Qwen/Qwen3-VL-Embedding-2B",
+                    "embed_model": EMBED_MODEL,
+                    "embed_dim": EMBED_DIM,
                 }
                 _save_doc_log(doc_out_dir, doc_id, doc_log)
             except Exception:
@@ -260,70 +288,79 @@ def build_citation_index(
     return doc_registry
 
 
-# ── Stage 2c: two-stage retrieval (embed → rerank) ─────────────────────── #
+# ── Stage 2c: semantic retrieval (embed → optional rerank) ──────────────── #
 
 def query_citations(
     index_dir: str,
     topic: str,
     top_k_docs: int = 5,
     n_candidates: int = 20,
+    use_reranker: bool = True,
 ) -> list[str]:
     """
-    Retrieve doc_ids relevant to topic using two-stage HF retrieval:
-      1. Qwen3-VL-Embedding-2B cosine similarity → top-N candidate facts
-      2. Qwen3-Reranker-4B cross-encoder         → top-k final doc_ids
+    Retrieve doc_ids relevant to topic.
 
-    Returns list of doc_ids sorted by reranker score (best first).
+    Stage 1 — embeddinggemma cosine similarity (fast, Ollama):
+      embed query → dot product with fact_embeddings.npy → top-N facts
+
+    Stage 2 — Qwen3-Reranker-4B (optional, high precision):
+      cross-encoder P(yes) scores → rerank candidates → top-k doc_ids
+
+    Returns list of doc_ids sorted best-first.
     """
-    import numpy as np
-    from ai_scientist.hf_embed import get_embedder
-    from ai_scientist.hf_rerank import get_reranker
-
     emb_path, idx_path = _index_paths(index_dir)
     if not osp.exists(emb_path) or not osp.exists(idx_path):
-        print(f"[citation] HF index not found at {index_dir} — returning empty.")
+        print(f"[citation] Index not found at {index_dir} — no results.")
         return []
 
     with open(idx_path) as f:
         fact_records = json.load(f)
-    fact_embs = np.load(emb_path)                    # (N, 2048)
+    fact_embs = np.load(emb_path)                         # (N, 768)
 
-    # Stage 1: cosine similarity
-    embedder  = get_embedder()
-    instr     = "Retrieve scientific facts relevant to this research query."
-    query_emb = embedder.embed_texts([topic], instruction=instr)[0]   # (2048,)
-    cos_scores = fact_embs @ query_emb                                 # (N,)
+    # Stage 1: embeddinggemma cosine similarity
+    query_emb  = _embed_texts([topic])[0]                 # (768,)
+    cos_scores = fact_embs @ query_emb                    # (N,)
     n_cand     = min(n_candidates, len(fact_records))
     top_idx    = cos_scores.argsort()[::-1][:n_cand]
     candidates = [(fact_records[i], float(cos_scores[i])) for i in top_idx]
-    print(f"[citation] Stage 1: {n_cand} candidates from {len(fact_records)} facts")
+    print(f"[citation] Stage 1 ({EMBED_MODEL}): "
+          f"{n_cand} candidates from {len(fact_records)} facts")
 
-    # Stage 2: reranking
-    reranker     = get_reranker()
-    cand_texts   = [c[0]["fact_text"] for c in candidates]
-    rerank_scores = reranker.rerank(topic, cand_texts)
+    # Stage 2: optional reranker
+    if use_reranker:
+        try:
+            from ai_scientist.hf_rerank import get_reranker
+            reranker      = get_reranker()
+            cand_texts    = [c[0]["fact_text"] for c in candidates]
+            rerank_scores = reranker.rerank(topic, cand_texts)
+            ranked = sorted(
+                zip(candidates, rerank_scores),
+                key=lambda x: x[1], reverse=True,
+            )
+            print(f"[citation] Stage 2 (Qwen3-Reranker): reranked {len(ranked)} candidates")
+        except Exception as exc:
+            print(f"[citation] Reranker unavailable ({exc}), using cosine order")
+            ranked = [(c, score) for c, score in candidates]
+    else:
+        ranked = [(c, score) for c, score in candidates]
 
-    ranked = sorted(
-        zip(candidates, rerank_scores),
-        key=lambda x: x[1],
-        reverse=True,
-    )
-
+    # Collect top unique doc_ids
     seen:   set[str]  = set()
     result: list[str] = []
-    for (record, _cos), rr in ranked:
+    for (record, score) in ranked:
         doc_id = record["doc_id"]
         if doc_id not in seen:
             seen.add(doc_id)
             result.append(doc_id)
-            print(f"[citation]   {doc_id}  rerank={rr:.4f}")
+            print(f"[citation]   {doc_id}  score={score:.4f}  "
+                  f"({record.get('claim_type','')}: {record['fact_text'][:60]}...)")
         if len(result) >= top_k_docs:
             break
 
     return result
 
 
-# kept as alias so existing callers of query_citations_hf still work
+# alias for backward compatibility
 query_citations_hf = query_citations
 
 
